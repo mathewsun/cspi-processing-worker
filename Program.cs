@@ -11,6 +11,7 @@ builder.Services.AddHostedService<AutoEventDecisionService>();
 builder.Services.AddHostedService<ApprovedEventService>();
 builder.Services.AddHostedService<SingletonEventService>();
 builder.Services.AddHttpClient("country-llm", client => client.Timeout = TimeSpan.FromSeconds(45));
+builder.Services.AddHostedService<CountryLlmQueueService>();
 builder.Services.AddHostedService<LlmCountryRoleService>();
 builder.Services.AddHostedService<CountryRoleProposalService>();
 builder.Services.AddHostedService<CountryRelationsMaterializer>();
