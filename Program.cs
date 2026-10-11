@@ -7,6 +7,7 @@ builder.Services.AddHttpClient("semantic", client =>
 });
 builder.Services.AddHostedService<SemanticCandidateService>();
 builder.Services.AddHostedService<EventReviewCandidateService>();
+builder.Services.AddHostedService<ApprovedEventService>();
 builder.Services.AddHostedService<ProcessingService>();
 builder.Services.AddHostedService<StagingPromotionService>();
 await builder.Build().RunAsync();
