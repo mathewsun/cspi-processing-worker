@@ -55,17 +55,38 @@ public static class CandidateAnalysis
             while (await reader.ReadAsync(ct))
                 countries.Add((reader.GetInt32(0), reader.GetString(1)));
 
-        foreach (var country in FindExplicitCountryMentions(title, body, countries))
+        // Country catalog names and reviewed multilingual aliases are weak mentions only.
+        // Ambiguous aliases (for example Georgia) are not automatically emitted.
+        var phrases = countries.Select(c => (c.Id, Phrase: c.Name, Ambiguous: c.Name is "Georgia" or "Jordan" or "Turkey")).ToList();
+        await using (var cmd = new NpgsqlCommand("""
+            SELECT country_profile_id, alias, is_ambiguous FROM news_country_aliases;
+            """, db, tx))
         {
+            await using var reader = await cmd.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+                phrases.Add((reader.GetInt32(0), reader.GetString(1), reader.GetBoolean(2)));
+        }
+
+        var searchText = (title + " " + (body ?? "")[..Math.Min(body?.Length ?? 0, 4000)])
+            .Normalize(NormalizationForm.FormKC);
+        var matched = new HashSet<int>();
+        foreach (var phrase in phrases)
+        {
+            if (phrase.Ambiguous || phrase.Phrase.Length < 4 || matched.Contains(phrase.Id)) continue;
+            if (!Regex.IsMatch(searchText,
+                $@"(?<![\p{{L}}\p{{N}}]){Regex.Escape(phrase.Phrase)}(?![\p{{L}}\p{{N}}])",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
+                TimeSpan.FromMilliseconds(100))) continue;
+            matched.Add(phrase.Id);
             await using var cmd = new NpgsqlCommand("""
                 INSERT INTO news_country_candidates
                     (publication_id,country_profile_id,method,evidence,confidence)
-                VALUES (@publication,@country,'ExplicitNameV1',@evidence,0.5)
+                VALUES (@publication,@country,'MultilingualAliasV1',@evidence,0.5)
                 ON CONFLICT DO NOTHING;
                 """, db, tx);
             cmd.Parameters.AddWithValue("publication", publicationId);
-            cmd.Parameters.AddWithValue("country", country.Id);
-            cmd.Parameters.AddWithValue("evidence", country.Name);
+            cmd.Parameters.AddWithValue("country", phrase.Id);
+            cmd.Parameters.AddWithValue("evidence", phrase.Phrase);
             await cmd.ExecuteNonQueryAsync(ct);
         }
 
