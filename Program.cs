@@ -1,6 +1,11 @@
 using Cspi.ProcessingWorker;
 
 var builder = Host.CreateApplicationBuilder(args);
+builder.Services.AddHttpClient("semantic", client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(30);
+});
+builder.Services.AddHostedService<SemanticCandidateService>();
 builder.Services.AddHostedService<ProcessingService>();
 builder.Services.AddHostedService<StagingPromotionService>();
 await builder.Build().RunAsync();
