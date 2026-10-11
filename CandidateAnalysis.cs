@@ -57,7 +57,7 @@ public static class CandidateAnalysis
 
         // Country catalog names and reviewed multilingual aliases are weak mentions only.
         // Ambiguous aliases (for example Georgia) are not automatically emitted.
-        var phrases = countries.Select(c => (c.Id, Phrase: c.Name, Ambiguous: false)).ToList();
+        var phrases = countries.Select(c => (c.Id, Phrase: c.Name, Ambiguous: c.Name is "Georgia" or "Jordan" or "Turkey")).ToList();
         await using (var cmd = new NpgsqlCommand("""
             SELECT country_profile_id, alias, is_ambiguous FROM news_country_aliases;
             """, db, tx))
