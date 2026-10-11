@@ -128,6 +128,7 @@ public sealed class ProcessingService(IConfiguration configuration, ILogger<Proc
                 command.Parameters.AddWithValue("duplicate", (object?)duplicate ?? DBNull.Value);
                 await command.ExecuteNonQueryAsync(ct);
             }
+            await CandidateAnalysis.RecordCandidates(db, tx, publicationId, title, articleText, ct);
             await using (var command = new NpgsqlCommand("""
                 UPDATE news_processing_jobs
                 SET processed_at = now(), lease_until = NULL, lease_owner = NULL, last_error = NULL
