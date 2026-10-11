@@ -20,6 +20,7 @@ public sealed class LlmCountryRoleService(
     private readonly string model = configuration["CountryLlm:Model"] ?? "";
     private readonly string endpoint = configuration["CountryLlm:Endpoint"] ?? "";
     private readonly string key = configuration["CountryLlm:ApiKey"] ?? "";
+    private readonly string owner = $"{Environment.MachineName}-{Guid.NewGuid():N}";
 
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
@@ -54,14 +55,26 @@ public sealed class LlmCountryRoleService(
         await using var db = new NpgsqlConnection(connection);
         await db.OpenAsync(ct);
         await using var cmd = new NpgsqlCommand("""
-            SELECT j.publication_id,p."Title",p."OriginalText"
-            FROM news_country_llm_jobs j
-            JOIN "Publications" p ON p."Id"=j.publication_id
-            WHERE j.model_id=@model AND j.state<>'Completed'
-              AND j.attempts<3 AND j.next_attempt_at<=now()
-            ORDER BY j.next_attempt_at,j.publication_id LIMIT 1;
+            WITH due AS (
+                SELECT publication_id, model_id
+                FROM news_country_llm_jobs
+                WHERE model_id=@model AND state<>'Completed'
+                  AND attempts<3 AND next_attempt_at<=now()
+                  AND (lease_until IS NULL OR lease_until<now())
+                ORDER BY next_attempt_at,publication_id
+                FOR UPDATE SKIP LOCKED LIMIT 1
+            ), claimed AS (
+                UPDATE news_country_llm_jobs j
+                SET lease_owner=@owner, lease_until=now()+interval '2 minutes'
+                FROM due
+                WHERE j.publication_id=due.publication_id AND j.model_id=due.model_id
+                RETURNING j.publication_id
+            )
+            SELECT p."Id",p."Title",p."OriginalText"
+            FROM claimed c JOIN "Publications" p ON p."Id"=c.publication_id;
             """, db);
         cmd.Parameters.AddWithValue("model", model);
+        cmd.Parameters.AddWithValue("owner", owner);
         await using var reader = await cmd.ExecuteReaderAsync(ct);
         if (!await reader.ReadAsync(ct)) return null;
         return (reader.GetInt32(0),reader.GetString(1),
@@ -145,13 +158,16 @@ public sealed class LlmCountryRoleService(
                 await cmd.ExecuteNonQueryAsync(ct);
             }
             await using (var done = new NpgsqlCommand("""
-                UPDATE news_country_llm_jobs SET state='Completed',processed_at=now(),last_error=NULL
-                WHERE publication_id=@id AND model_id=@model;
+                UPDATE news_country_llm_jobs SET state='Completed',processed_at=now(),last_error=NULL,
+                    lease_owner=NULL,lease_until=NULL
+                WHERE publication_id=@id AND model_id=@model AND lease_owner=@owner;
                 """,db,tx))
             {
                 done.Parameters.AddWithValue("id",article.Id);
                 done.Parameters.AddWithValue("model",model);
-                await done.ExecuteNonQueryAsync(ct);
+                done.Parameters.AddWithValue("owner",owner);
+                if (await done.ExecuteNonQueryAsync(ct)!=1)
+                    throw new InvalidOperationException("Classification lease lost");
             }
             await tx.CommitAsync(ct);
             logger.LogInformation("Country role proposals completed for {Publication}: {Count}",article.Id,validated.Count);
@@ -164,11 +180,13 @@ public sealed class LlmCountryRoleService(
             await db.OpenAsync(ct);
             await using var cmd = new NpgsqlCommand("""
                 UPDATE news_country_llm_jobs SET attempts=attempts+1,
-                  state='Failed',next_attempt_at=now()+interval '15 minutes',last_error=@error
-                WHERE publication_id=@id AND model_id=@model;
+                  state='Failed',next_attempt_at=now()+interval '15 minutes',last_error=@error,
+                  lease_owner=NULL,lease_until=NULL
+                WHERE publication_id=@id AND model_id=@model AND lease_owner=@owner;
                 """,db);
             cmd.Parameters.AddWithValue("id",article.Id);
             cmd.Parameters.AddWithValue("model",model);
+            cmd.Parameters.AddWithValue("owner",owner);
             cmd.Parameters.AddWithValue("error",ex.Message[..Math.Min(400,ex.Message.Length)]);
             await cmd.ExecuteNonQueryAsync(ct);
         }
