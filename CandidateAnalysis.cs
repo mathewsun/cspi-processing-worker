@@ -74,7 +74,7 @@ public static class CandidateAnalysis
         {
             if (phrase.Ambiguous || phrase.Phrase.Length < 4 || matched.Contains(phrase.Id)) continue;
             if (!Regex.IsMatch(searchText,
-                $@"(?<![\\p{{L}}\\p{{N}}]){Regex.Escape(phrase.Phrase)}(?![\\p{{L}}\\p{{N}}])",
+                $@"(?<![\p{{L}}\p{{N}}]){Regex.Escape(phrase.Phrase)}(?![\p{{L}}\p{{N}}])",
                 RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
                 TimeSpan.FromMilliseconds(100))) continue;
             matched.Add(phrase.Id);
