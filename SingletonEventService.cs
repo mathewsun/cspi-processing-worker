@@ -56,6 +56,11 @@ public sealed class SingletonEventService(
             FROM "Publications" p
             JOIN news_processing_jobs j ON j.publication_id=p."Id"
             WHERE j.processed_at IS NOT NULL
+              AND j.processed_at < now() - interval '30 minutes'
+              AND NOT EXISTS (
+                  SELECT 1 FROM news_event_link_reviews r
+                  WHERE r.decision IN ('Pending','Approved')
+                    AND (r.publication_id_a=p."Id" OR r.publication_id_b=p."Id"))
               AND NOT EXISTS (
                   SELECT 1 FROM "EventPublications" ep WHERE ep."PublicationId"=p."Id")
             ORDER BY p."Id"
