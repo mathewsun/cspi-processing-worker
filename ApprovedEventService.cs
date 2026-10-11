@@ -80,11 +80,18 @@ public sealed class ApprovedEventService(
         var eventB = await ExistingEvent(db, tx, b, ct);
         if (eventA.HasValue && eventB.HasValue && eventA != eventB)
         {
-            await Record(db, tx, a, b, null, "Conflict",
-                $"Existing event clusters {eventA} and {eventB} differ", ct);
-            await tx.CommitAsync(ct);
-            logger.LogWarning("Approved pair {A}/{B} spans two existing event clusters", a, b);
-            return true;
+            // Only a pristine, one-article provisional event can be folded into
+            // another event. Never merge established multi-article clusters here.
+            var merged = await TryMergeProvisional(db, tx, eventA.Value, eventB.Value, ct);
+            if (!merged)
+            {
+                await Record(db, tx, a, b, null, "Conflict",
+                    $"Existing event clusters {eventA} and {eventB} differ", ct);
+                await tx.CommitAsync(ct);
+                logger.LogWarning("Approved pair {A}/{B} spans protected event clusters", a, b);
+                return true;
+            }
+            eventB = eventA;
         }
 
         var eventId = eventA ?? eventB ?? await CreateEvent(db, tx, a, ct);
@@ -104,6 +111,68 @@ public sealed class ApprovedEventService(
         await Record(db, tx, a, b, eventId, "Linked", null, ct);
         await tx.CommitAsync(ct);
         logger.LogInformation("Applied approved pair {A}/{B} to event {Event}", a, b, eventId);
+        return true;
+    }
+
+    private static async Task<bool> TryMergeProvisional(
+        NpgsqlConnection db, NpgsqlTransaction tx, int targetEvent, int sourceEvent,
+        CancellationToken ct)
+    {
+        // Refuse if the target/source contain any manually blocked pair.
+        // Refuse if the source is not an untouched singleton, or has country
+        // classification or legacy references. Retain source Event for audit.
+        await using var cmd = new NpgsqlCommand("""
+            WITH source_members AS (
+                SELECT "PublicationId" FROM "EventPublications" WHERE "EventId"=@source
+            ), target_members AS (
+                SELECT "PublicationId" FROM "EventPublications" WHERE "EventId"=@target
+            )
+            SELECT
+                (SELECT count(*) FROM source_members)=1
+                AND (SELECT count(*) FROM "EventPublications"
+                     WHERE "EventId"=@source AND "Method"='ProvisionalSingletonV1')=1
+                AND NOT EXISTS (SELECT 1 FROM "EventCountries" WHERE "EventId"=@source)
+                AND NOT EXISTS (SELECT 1 FROM "Publications" WHERE "EventId"=@source)
+                AND NOT EXISTS (
+                    SELECT 1 FROM news_event_pair_blocks b
+                    JOIN source_members s ON b.publication_id_a=s."PublicationId"
+                        OR b.publication_id_b=s."PublicationId"
+                    JOIN target_members t ON
+                        (b.publication_id_a=LEAST(s."PublicationId",t."PublicationId")
+                         AND b.publication_id_b=GREATEST(s."PublicationId",t."PublicationId")))
+                AND NOT EXISTS (
+                    SELECT 1 FROM news_event_link_reviews r
+                    JOIN source_members s ON r.publication_id_a=s."PublicationId"
+                        OR r.publication_id_b=s."PublicationId"
+                    JOIN target_members t ON
+                        (r.publication_id_a=LEAST(s."PublicationId",t."PublicationId")
+                         AND r.publication_id_b=GREATEST(s."PublicationId",t."PublicationId"))
+                    WHERE r.decision='Rejected');
+            """, db, tx);
+        cmd.Parameters.AddWithValue("source", sourceEvent);
+        cmd.Parameters.AddWithValue("target", targetEvent);
+        if (await cmd.ExecuteScalarAsync(ct) is not bool safe || !safe)
+            return false;
+
+        await using (var move = new NpgsqlCommand("""
+            UPDATE "EventPublications" SET "EventId"=@target
+            WHERE "EventId"=@source;
+            """, db, tx))
+        {
+            move.Parameters.AddWithValue("target", targetEvent);
+            move.Parameters.AddWithValue("source", sourceEvent);
+            if (await move.ExecuteNonQueryAsync(ct) != 1) return false;
+        }
+        await using (var history = new NpgsqlCommand("""
+            INSERT INTO news_event_actions(event_id,action,actor,details)
+            VALUES (@target,'AutoMergeProvisional','processing-worker',
+                    jsonb_build_object('source_event_id',@source,'target_event_id',@target));
+            """, db, tx))
+        {
+            history.Parameters.AddWithValue("target", targetEvent);
+            history.Parameters.AddWithValue("source", sourceEvent);
+            await history.ExecuteNonQueryAsync(ct);
+        }
         return true;
     }
 
