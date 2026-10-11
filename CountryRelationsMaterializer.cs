@@ -71,25 +71,10 @@ public sealed class CountryRelationsMaterializer(
             """, db, tx);
         var articleCount = await publications.ExecuteNonQueryAsync(ct);
 
-        // An event-country relationship can be inferred only from already
-        // accepted publication-country links. Existing classifications win.
-        // Restrict event aggregation to an event with a single linked article:
-        // multi-article event roles require a separate consensus policy.
-        await using var events = new NpgsqlCommand("""
-            WITH singleton_events AS (
-                SELECT "EventId" FROM "EventPublications"
-                GROUP BY "EventId" HAVING count(*)=1
-            )
-            INSERT INTO "EventCountries"
-                ("EventId","CountryProfileId","Role","Confidence","Method","ClassifiedAt")
-            SELECT ep."EventId",pc."CountryProfileId",pc."Role",
-                   pc."Confidence",'SingletonArticleV1',now()
-            FROM "EventPublications" ep
-            JOIN singleton_events se ON se."EventId"=ep."EventId"
-            JOIN "PublicationCountries" pc ON pc."PublicationId"=ep."PublicationId"
-            ON CONFLICT ("EventId","CountryProfileId") DO NOTHING;
-            """, db, tx);
-        var eventCount = await events.ExecuteNonQueryAsync(ct);
+        // EventCountries are now managed exclusively by
+        // EventGeographyReconciliationService. Keeping two writers would
+        // reintroduce stale singleton links after an event merge/split.
+        var eventCount = 0;
         await tx.CommitAsync(ct);
         return (articleCount, eventCount);
     }

@@ -15,6 +15,7 @@ builder.Services.AddHostedService<CountryLlmQueueService>();
 builder.Services.AddHostedService<LlmCountryRoleService>();
 builder.Services.AddHostedService<CountryRoleProposalService>();
 builder.Services.AddHostedService<CountryRelationsMaterializer>();
+builder.Services.AddHostedService<EventGeographyReconciliationService>();
 builder.Services.AddHostedService<CountryAutoDecisionService>();
 builder.Services.AddHostedService<ProcessingService>();
 builder.Services.AddHostedService<StagingPromotionService>();
