@@ -11,6 +11,7 @@ builder.Services.AddHostedService<AutoEventDecisionService>();
 builder.Services.AddHostedService<ApprovedEventService>();
 builder.Services.AddHostedService<SingletonEventService>();
 builder.Services.AddHostedService<CountryRoleProposalService>();
+builder.Services.AddHostedService<CountryRelationsMaterializer>();
 builder.Services.AddHostedService<ProcessingService>();
 builder.Services.AddHostedService<StagingPromotionService>();
 await builder.Build().RunAsync();
