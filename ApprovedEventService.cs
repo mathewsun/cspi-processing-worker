@@ -54,6 +54,10 @@ public sealed class ApprovedEventService(
             FROM news_event_link_reviews r
             WHERE r.decision='Approved'
               AND NOT EXISTS (
+                SELECT 1 FROM news_event_pair_blocks block
+                WHERE block.publication_id_a=r.publication_id_a
+                  AND block.publication_id_b=r.publication_id_b)
+              AND NOT EXISTS (
                 SELECT 1 FROM news_event_review_applications x
                 WHERE x.publication_id_a=r.publication_id_a
                   AND x.publication_id_b=r.publication_id_b)
