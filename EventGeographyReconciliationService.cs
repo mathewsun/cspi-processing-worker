@@ -9,6 +9,7 @@ namespace Cspi.ProcessingWorker;
 public sealed class EventGeographyReconciliationService(
     IConfiguration config, ILogger<EventGeographyReconciliationService> logger) : BackgroundService
 {
+    private readonly int batchSize = Math.Clamp(config.GetValue("EventGeography:BatchSize", 100), 1, 500);
     private readonly string connection = config.GetConnectionString("DefaultConnection")
         ?? throw new InvalidOperationException("Missing database connection");
 
@@ -51,6 +52,18 @@ public sealed class EventGeographyReconciliationService(
         await using (var guard = new NpgsqlCommand("SELECT pg_advisory_xact_lock(23011, 7)", db, tx))
             await guard.ExecuteNonQueryAsync(ct);
 
+        // Lock only a bounded batch. Other replicas can claim other events.
+        // We retain the graph advisory lock to serialize against merge/split.
+        await using (var claim = new NpgsqlCommand("""
+            CREATE TEMP TABLE geography_batch ON COMMIT DROP AS
+            SELECT event_id, changed_at FROM news_event_geography_dirty
+            ORDER BY changed_at,event_id LIMIT @limit FOR UPDATE SKIP LOCKED;
+            """, db, tx))
+        {
+            claim.Parameters.AddWithValue("limit", batchSize);
+            await claim.ExecuteNonQueryAsync(ct);
+        }
+
         // Conservative consensus:
         // singleton: inherit the one accepted publication-country role;
         // multi-article: require agreement on the same role from >=2 distinct
@@ -62,6 +75,7 @@ public sealed class EventGeographyReconciliationService(
                 SELECT ep."EventId" AS event_id, ep."PublicationId" AS publication_id,
                        p."SourceId" AS source_id
                 FROM "EventPublications" ep
+                JOIN geography_batch batch ON batch.event_id=ep."EventId"
                 JOIN "Publications" p ON p."Id"=ep."PublicationId"
             ), totals AS (
                 SELECT event_id, COUNT(*) AS articles
@@ -98,6 +112,7 @@ public sealed class EventGeographyReconciliationService(
         await using var remove = new NpgsqlCommand("""
             DELETE FROM "EventCountries" ec
             WHERE ec."Method" IN ('SingletonArticleV1','EventConsensusV1')
+              AND ec."EventId" IN (SELECT event_id FROM geography_batch)
               AND NOT EXISTS (
                   SELECT 1 FROM event_country_desired d
                   WHERE d.event_id=ec."EventId"
@@ -117,6 +132,15 @@ public sealed class EventGeographyReconciliationService(
             ON CONFLICT ("EventId","CountryProfileId") DO NOTHING;
             """, db, tx);
         var inserted = await insert.ExecuteNonQueryAsync(ct);
+        // A trigger may update changed_at while we process; only acknowledge
+        // the version actually claimed. Newer changes remain queued.
+        await using (var acknowledge = new NpgsqlCommand("""
+            DELETE FROM news_event_geography_dirty d
+            USING geography_batch b
+            WHERE d.event_id=b.event_id AND d.changed_at=b.changed_at;
+            """, db, tx))
+            await acknowledge.ExecuteNonQueryAsync(ct);
+
         await tx.CommitAsync(ct);
         return (removed, inserted);
     }
