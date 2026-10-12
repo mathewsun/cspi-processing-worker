@@ -132,7 +132,11 @@ public sealed class EventGeographyReconciliationService(
                 INSERT INTO "EventCountries"
                     ("EventId","CountryProfileId","Role","Confidence","Method","ClassifiedAt")
                 SELECT event_id,country_id,role,confidence,method,now()
-                FROM event_country_desired
+                FROM event_country_desired d
+                WHERE NOT EXISTS (
+                  SELECT 1 FROM news_geography_manual_overrides o
+                  WHERE o.target_type='Event' AND o.target_id=d.event_id
+                    AND o.country_profile_id=d.country_id)
                 ON CONFLICT ("EventId","CountryProfileId") DO NOTHING
                 RETURNING "EventId","CountryProfileId"
             ), owned AS (
