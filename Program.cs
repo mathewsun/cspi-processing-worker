@@ -1,6 +1,11 @@
 using Cspi.ProcessingWorker;
 
 var builder = Host.CreateApplicationBuilder(args);
+if (builder.Configuration.GetValue("CountryRelations:Enabled", false) &&
+    builder.Configuration.GetValue("PublicationGeography:Enabled", false))
+    throw new InvalidOperationException(
+        "CountryRelations and PublicationGeography cannot run simultaneously. Disable the legacy full-scan service.");
+
 builder.Services.AddHttpClient("semantic", client =>
 {
     client.Timeout = TimeSpan.FromSeconds(30);
