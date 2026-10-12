@@ -70,9 +70,11 @@ public sealed class IncrementalPublicationGeographyService(
 
         await using (var cmd = new NpgsqlCommand("""
             DELETE FROM "PublicationCountries" pc
-            USING publication_batch b
+            USING publication_batch b, news_publication_country_ownership own
             WHERE pc."PublicationId"=b.publication_id
-              AND pc."Method" IN ('LlmRoleV1','ExplicitMentionV1')
+              AND own.publication_id=pc."PublicationId"
+              AND own.country_profile_id=pc."CountryProfileId"
+              AND own.owner='IncrementalPublicationGeographyV1'
               AND NOT EXISTS (
                 SELECT 1 FROM publication_desired d
                 WHERE d.publication_id=pc."PublicationId"
@@ -85,20 +87,31 @@ public sealed class IncrementalPublicationGeographyService(
             UPDATE "PublicationCountries" pc
             SET "Role"=d.role,"Confidence"=d.confidence,"ClassifiedAt"=now()
             FROM publication_desired d
+            JOIN news_publication_country_ownership own
+              ON own.publication_id=d.publication_id
+             AND own.country_profile_id=d.country_profile_id
+             AND own.owner='IncrementalPublicationGeographyV1'
             WHERE pc."PublicationId"=d.publication_id
               AND pc."CountryProfileId"=d.country_profile_id
-              AND pc."Method" IN ('LlmRoleV1','ExplicitMentionV1')
               AND (pc."Role" IS DISTINCT FROM d.role
                 OR pc."Confidence" IS DISTINCT FROM d.confidence);
             """,db,tx))
             await cmd.ExecuteNonQueryAsync(ct);
 
         await using (var cmd = new NpgsqlCommand("""
-            INSERT INTO "PublicationCountries"
-                ("PublicationId","CountryProfileId","Role","Confidence","Method","ClassifiedAt")
-            SELECT publication_id,country_profile_id,role,confidence,'LlmRoleV1',now()
-            FROM publication_desired
-            ON CONFLICT ("PublicationId","CountryProfileId") DO NOTHING;
+            WITH inserted AS (
+                INSERT INTO "PublicationCountries"
+                    ("PublicationId","CountryProfileId","Role","Confidence","Method","ClassifiedAt")
+                SELECT publication_id,country_profile_id,role,confidence,'LlmRoleV1',now()
+                FROM publication_desired
+                ON CONFLICT ("PublicationId","CountryProfileId") DO NOTHING
+                RETURNING "PublicationId","CountryProfileId"
+            )
+            INSERT INTO news_publication_country_ownership
+                (publication_id,country_profile_id,owner)
+            SELECT "PublicationId","CountryProfileId",'IncrementalPublicationGeographyV1'
+            FROM inserted
+            ON CONFLICT DO NOTHING;
             """,db,tx))
             await cmd.ExecuteNonQueryAsync(ct);
 
