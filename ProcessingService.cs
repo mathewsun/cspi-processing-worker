@@ -103,7 +103,7 @@ public sealed class ProcessingService(IConfiguration configuration, ILogger<Proc
             await using (var command = new NpgsqlCommand("""
                 SELECT publication_id FROM news_article_fingerprints
                 WHERE publication_id <> @id AND (
-                    url_hash = @urlHash OR (@textHash IS NOT NULL AND text_hash = @textHash)
+                    url_hash = @urlHash OR (CAST(@textHash AS text) IS NOT NULL AND text_hash = CAST(@textHash AS text))
                 )
                 ORDER BY publication_id LIMIT 1;
                 """, db, tx))
