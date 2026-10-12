@@ -58,6 +58,10 @@ public sealed class IncrementalPublicationGeographyService(
             JOIN publication_batch b ON b.publication_id=p.publication_id
             WHERE p.status='Accepted'
               AND NOT EXISTS (
+                SELECT 1 FROM news_geography_manual_overrides o
+                WHERE o.target_type='Publication' AND o.target_id=p.publication_id
+                  AND o.country_profile_id=p.country_profile_id)
+              AND NOT EXISTS (
                   SELECT 1 FROM news_country_role_proposals veto
                   WHERE veto.publication_id=p.publication_id
                     AND veto.country_profile_id=p.country_profile_id
@@ -104,6 +108,10 @@ public sealed class IncrementalPublicationGeographyService(
                     ("PublicationId","CountryProfileId","Role","Confidence","Method","ClassifiedAt")
                 SELECT publication_id,country_profile_id,role,confidence,'LlmRoleV1',now()
                 FROM publication_desired
+                WHERE NOT EXISTS (
+                  SELECT 1 FROM news_geography_manual_overrides o
+                  WHERE o.target_type='Publication' AND o.target_id=publication_id
+                    AND o.country_profile_id=country_profile_id)
                 ON CONFLICT ("PublicationId","CountryProfileId") DO NOTHING
                 RETURNING "PublicationId","CountryProfileId"
             )
