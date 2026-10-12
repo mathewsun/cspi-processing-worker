@@ -111,7 +111,10 @@ public sealed class EventGeographyReconciliationService(
         // stale due to event merge/split, rejected country links or new evidence.
         await using var remove = new NpgsqlCommand("""
             DELETE FROM "EventCountries" ec
-            WHERE ec."Method" IN ('SingletonArticleV1','EventConsensusV1')
+            USING news_event_country_ownership own
+            WHERE own.event_id=ec."EventId"
+              AND own.country_profile_id=ec."CountryProfileId"
+              AND own.owner='EventGeographyReconciliationV1'
               AND ec."EventId" IN (SELECT event_id FROM geography_batch)
               AND NOT EXISTS (
                   SELECT 1 FROM event_country_desired d
@@ -122,16 +125,26 @@ public sealed class EventGeographyReconciliationService(
             """, db, tx);
         var removed = await remove.ExecuteNonQueryAsync(ct);
 
-        // Manual rows win on conflict; automatic rows are inserted only if
-        // no relationship already exists for this event/country.
+        // Only newly inserted event-country rows become worker-owned.
+        // Existing manual or historical rows are never claimed.
         await using var insert = new NpgsqlCommand("""
-            INSERT INTO "EventCountries"
-                ("EventId","CountryProfileId","Role","Confidence","Method","ClassifiedAt")
-            SELECT event_id,country_id,role,confidence,method,now()
-            FROM event_country_desired
-            ON CONFLICT ("EventId","CountryProfileId") DO NOTHING;
+            WITH inserted AS (
+                INSERT INTO "EventCountries"
+                    ("EventId","CountryProfileId","Role","Confidence","Method","ClassifiedAt")
+                SELECT event_id,country_id,role,confidence,method,now()
+                FROM event_country_desired
+                ON CONFLICT ("EventId","CountryProfileId") DO NOTHING
+                RETURNING "EventId","CountryProfileId"
+            ), owned AS (
+                INSERT INTO news_event_country_ownership
+                    (event_id,country_profile_id,owner)
+                SELECT "EventId","CountryProfileId",'EventGeographyReconciliationV1'
+                FROM inserted ON CONFLICT DO NOTHING
+                RETURNING event_id
+            )
+            SELECT count(*) FROM owned;
             """, db, tx);
-        var inserted = await insert.ExecuteNonQueryAsync(ct);
+        var inserted = Convert.ToInt32(await insert.ExecuteScalarAsync(ct));
         // A trigger may update changed_at while we process; only acknowledge
         // the version actually claimed. Newer changes remain queued.
         await using (var acknowledge = new NpgsqlCommand("""
