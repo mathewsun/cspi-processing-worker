@@ -11,6 +11,10 @@ namespace Cspi.ProcessingWorker;
 /// </summary>
 public sealed class ProcessingService(IConfiguration configuration, ILogger<ProcessingService> logger) : BackgroundService
 {
+    internal const string SocialSource = """
+        (coalesce(to_jsonb(s)->>'CollectionKind','Rss')='Social' OR
+         rtrim(coalesce(substring(lower(s."Url") from '^https?://([^/:?#]+)'),''),'.') ~ '(^|[.])(youtube[.]com|youtu[.]be|t[.]me|instagram[.]com|facebook[.]com|tiktok[.]com|x[.]com|twitter[.]com)$')
+        """;
     private readonly string connection = configuration.GetConnectionString("DefaultConnection")
         ?? throw new InvalidOperationException("ConnectionStrings:DefaultConnection is required");
     private readonly string owner = $"{Environment.MachineName}-{Guid.NewGuid():N}";
@@ -49,13 +53,24 @@ public sealed class ProcessingService(IConfiguration configuration, ILogger<Proc
     {
         await using var db = new NpgsqlConnection(connection);
         await db.OpenAsync(ct);
-        await using var command = new NpgsqlCommand("""
-            WITH next_job AS (
+        await using var command = new NpgsqlCommand($$"""
+            WITH retire AS (
+                SELECT j.publication_id FROM news_processing_jobs j JOIN "Publications" p ON p."Id"=j.publication_id
+                JOIN "Sources" s ON s."Id"=p."SourceId"
+                WHERE j.processed_at IS NULL AND {{SocialSource}}
+                  AND (j.lease_until IS NULL OR j.lease_until<now())
+                  AND (j.next_attempt_at<>'infinity'::timestamptz OR j.last_error IS DISTINCT FROM 'SkippedSocialSource')
+                ORDER BY j.publication_id FOR UPDATE OF j SKIP LOCKED LIMIT 100
+            ), retired AS (
+                UPDATE news_processing_jobs j SET next_attempt_at='infinity'::timestamptz,
+                    last_error='SkippedSocialSource',lease_owner=NULL,lease_until=NULL
+                FROM retire WHERE j.publication_id=retire.publication_id RETURNING j.publication_id
+            ), next_job AS (
                 SELECT publication_id
                 FROM news_processing_jobs
                 WHERE processed_at IS NULL
                   AND EXISTS(SELECT 1 FROM "Publications" p LEFT JOIN "Sources" s ON s."Id"=p."SourceId"
-                    WHERE p."Id"=publication_id AND coalesce(to_jsonb(s)->>'CollectionKind','Rss')<>'Social')
+                    WHERE p."Id"=publication_id AND NOT {{SocialSource}})
                   AND next_attempt_at <= now()
                   AND (lease_until IS NULL OR lease_until < now())
                 ORDER BY next_attempt_at, publication_id
@@ -82,9 +97,9 @@ public sealed class ProcessingService(IConfiguration configuration, ILogger<Proc
             string? url;
             string title;
             string? articleText;
-            await using (var command = new NpgsqlCommand("""
+            await using (var command = new NpgsqlCommand($$"""
                 SELECT p."Url", p."Title", p."OriginalText" FROM "Publications" p LEFT JOIN "Sources" s ON s."Id"=p."SourceId"
-                WHERE p."Id" = @id AND coalesce(to_jsonb(s)->>'CollectionKind','Rss')<>'Social';
+                WHERE p."Id" = @id AND NOT {{SocialSource}};
                 """, db, tx))
             {
                 command.Parameters.AddWithValue("id", publicationId);
@@ -102,12 +117,13 @@ public sealed class ProcessingService(IConfiguration configuration, ILogger<Proc
             var urlHash = Hash(normalizedUrl ?? ("title:" + normalizedTitle));
             int? duplicate = null;
 
-            await using (var command = new NpgsqlCommand("""
-                SELECT publication_id FROM news_article_fingerprints
-                WHERE publication_id <> @id AND (
-                    url_hash = @urlHash OR (CAST(@textHash AS text) IS NOT NULL AND text_hash = CAST(@textHash AS text))
+            await using (var command = new NpgsqlCommand($$"""
+                SELECT f.publication_id FROM news_article_fingerprints f
+                JOIN "Publications" p ON p."Id"=f.publication_id LEFT JOIN "Sources" s ON s."Id"=p."SourceId"
+                WHERE f.publication_id <> @id AND NOT {{SocialSource}} AND (
+                    f.url_hash = @urlHash OR (CAST(@textHash AS text) IS NOT NULL AND f.text_hash = CAST(@textHash AS text))
                 )
-                ORDER BY publication_id LIMIT 1;
+                ORDER BY f.publication_id LIMIT 1;
                 """, db, tx))
             {
                 command.Parameters.AddWithValue("id", publicationId);

@@ -92,9 +92,9 @@ public static class CandidateAnalysis
 
         // Candidate search bounded by time and count; no unbounded pairwise scan.
         var otherTitles = new List<(int Id, string Title)>();
-        await using (var cmd = new NpgsqlCommand("""
-            SELECT p."Id", p."Title" FROM "Publications" p
-            WHERE p."Id" <> @id
+        await using (var cmd = new NpgsqlCommand($$"""
+            SELECT p."Id", p."Title" FROM "Publications" p LEFT JOIN "Sources" s ON s."Id"=p."SourceId"
+            WHERE p."Id" <> @id AND NOT {{ProcessingService.SocialSource}}
               AND p."PublishedAt" >= (
                   SELECT "PublishedAt" - interval '24 hours'
                   FROM "Publications" WHERE "Id" = @id)
