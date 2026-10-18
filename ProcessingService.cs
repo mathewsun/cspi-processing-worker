@@ -54,6 +54,8 @@ public sealed class ProcessingService(IConfiguration configuration, ILogger<Proc
                 SELECT publication_id
                 FROM news_processing_jobs
                 WHERE processed_at IS NULL
+                  AND EXISTS(SELECT 1 FROM "Publications" p LEFT JOIN "Sources" s ON s."Id"=p."SourceId"
+                    WHERE p."Id"=publication_id AND coalesce(to_jsonb(s)->>'CollectionKind','Rss')<>'Social')
                   AND next_attempt_at <= now()
                   AND (lease_until IS NULL OR lease_until < now())
                 ORDER BY next_attempt_at, publication_id
@@ -81,8 +83,8 @@ public sealed class ProcessingService(IConfiguration configuration, ILogger<Proc
             string title;
             string? articleText;
             await using (var command = new NpgsqlCommand("""
-                SELECT "Url", "Title", "OriginalText" FROM "Publications"
-                WHERE "Id" = @id;
+                SELECT p."Url", p."Title", p."OriginalText" FROM "Publications" p LEFT JOIN "Sources" s ON s."Id"=p."SourceId"
+                WHERE p."Id" = @id AND coalesce(to_jsonb(s)->>'CollectionKind','Rss')<>'Social';
                 """, db, tx))
             {
                 command.Parameters.AddWithValue("id", publicationId);
