@@ -29,7 +29,7 @@ public sealed class IncrementalPublicationGeographyService(
         }
     }
 
-    private async Task<int> RunBatch(CancellationToken ct)
+    public async Task<int> RunBatch(CancellationToken ct)
     {
         await using var db = new NpgsqlConnection(connection);
         await db.OpenAsync(ct);
@@ -53,7 +53,7 @@ public sealed class IncrementalPublicationGeographyService(
                 p.publication_id,p.country_profile_id,
                 CASE p.proposed_role WHEN 'Primary' THEN 0
                     WHEN 'Secondary' THEN 1 ELSE 2 END AS role,
-                p.confidence
+                p.confidence,p.method
             FROM news_country_role_proposals p
             JOIN publication_batch b ON b.publication_id=p.publication_id
             WHERE p.status='Accepted'
@@ -89,7 +89,7 @@ public sealed class IncrementalPublicationGeographyService(
 
         await using (var cmd = new NpgsqlCommand("""
             UPDATE "PublicationCountries" pc
-            SET "Role"=d.role,"Confidence"=d.confidence,"ClassifiedAt"=now()
+            SET "Role"=d.role,"Confidence"=d.confidence,"Method"=d.method,"ClassifiedAt"=now()
             FROM publication_desired d
             JOIN news_publication_country_ownership own
               ON own.publication_id=d.publication_id
@@ -98,7 +98,7 @@ public sealed class IncrementalPublicationGeographyService(
             WHERE pc."PublicationId"=d.publication_id
               AND pc."CountryProfileId"=d.country_profile_id
               AND (pc."Role" IS DISTINCT FROM d.role
-                OR pc."Confidence" IS DISTINCT FROM d.confidence);
+                OR pc."Confidence" IS DISTINCT FROM d.confidence OR pc."Method" IS DISTINCT FROM d.method);
             """,db,tx))
             await cmd.ExecuteNonQueryAsync(ct);
 
@@ -106,12 +106,12 @@ public sealed class IncrementalPublicationGeographyService(
             WITH inserted AS (
                 INSERT INTO "PublicationCountries"
                     ("PublicationId","CountryProfileId","Role","Confidence","Method","ClassifiedAt")
-                SELECT publication_id,country_profile_id,role,confidence,'LlmRoleV1',now()
-                FROM publication_desired
+                SELECT d.publication_id,d.country_profile_id,d.role,d.confidence,d.method,now()
+                FROM publication_desired d
                 WHERE NOT EXISTS (
                   SELECT 1 FROM news_geography_manual_overrides o
-                  WHERE o.target_type='Publication' AND o.target_id=publication_id
-                    AND o.country_profile_id=country_profile_id)
+                  WHERE o.target_type='Publication' AND o.target_id=d.publication_id
+                    AND o.country_profile_id=d.country_profile_id)
                 ON CONFLICT ("PublicationId","CountryProfileId") DO NOTHING
                 RETURNING "PublicationId","CountryProfileId"
             )
