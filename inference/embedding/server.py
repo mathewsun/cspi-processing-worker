@@ -26,6 +26,11 @@ assert hashlib.sha256(open("/model/lid.176.ftz", "rb").read()).hexdigest() == LI
 language_model = fasttext.load_model("/model/lid.176.ftz")
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
+def detect_language(text):
+    headline = text.split("\n", 1)[0].replace("\r", " ").strip()
+    predictions = language_model.f.predict(headline, 1, 0.0, "strict") if headline else []
+    return predictions[0] if predictions else (0.0, "__label__und")
+
 class Inputs(BaseModel):
     model: str
     input: list[str] = Field(min_length=1, max_length=16)
@@ -56,5 +61,5 @@ def embeddings(request: Inputs):
         vectors = vectors / norms
         # Detect from the headline, avoiding publisher boilerplate in the body.
         # Raw pinned fastText API avoids its NumPy 2-incompatible array wrapper.
-        languages = [language_model.f.predict(s.split("\n", 1)[0].replace("\r", " "), 1, 0.0, "strict")[0] for s in request.input]
+        languages = [detect_language(s) for s in request.input]
     return {**health(), "data": [{"index": i, "embedding": v.tolist(), "language": languages[i][1].removeprefix("__label__"), "language_confidence": float(languages[i][0])} for i, v in enumerate(vectors)]}
