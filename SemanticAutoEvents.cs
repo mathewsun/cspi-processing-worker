@@ -25,7 +25,7 @@ public static class SemanticAutoEvents
     AND NOT EXISTS(SELECT 1 FROM news_event_pair_blocks x WHERE x.publication_id_a=p.a AND x.publication_id_b=p.b)
     AND NOT EXISTS(SELECT 1 FROM news_event_link_reviews x WHERE x.publication_id_a=p.a AND x.publication_id_b=p.b
       AND (x.decision='Rejected' OR x.evidence->>'human_decision'='true' OR (x.decision='Approved' AND NOT(
-        x.evidence->>'method'='LocalSemanticAutoV1' AND coalesce(x.evidence->>'human_decision','false')<>'true'
+        coalesce(x.evidence->>'method','')='LocalSemanticAutoV1' AND coalesce(x.evidence->>'human_decision','false')<>'true'
         AND (x.evidence->>'hash_a' IS DISTINCT FROM p.hash_a OR x.evidence->>'hash_b' IS DISTINCT FROM p.hash_b)
         AND NOT EXISTS(SELECT 1 FROM news_event_review_applications app WHERE app.publication_id_a=p.a AND app.publication_id_b=p.b)))))
    ORDER BY (ja.queue_kind='Live' OR jb.queue_kind='Live') DESC,p.created_at DESC LIMIT 64

@@ -20,7 +20,7 @@ public sealed class LocalEventStore(string connection)
      AND NOT EXISTS(SELECT 1 FROM news_event_pair_blocks x WHERE x.publication_id_a=p.a AND x.publication_id_b=p.b)
      AND NOT EXISTS(SELECT 1 FROM news_event_link_reviews x WHERE x.publication_id_a=p.a AND x.publication_id_b=p.b AND (x.decision='Rejected' OR (x.decision='Approved' AND
        (x.evidence->>'human_decision'='true' OR (coalesce(x.evidence->>'method','')<>'LocalEventJudgeV1' AND NOT(
-         x.evidence->>'method'='LocalSemanticAutoV1' AND coalesce(x.evidence->>'human_decision','false')<>'true'
+         coalesce(x.evidence->>'method','')='LocalSemanticAutoV1' AND coalesce(x.evidence->>'human_decision','false')<>'true'
          AND (x.evidence->>'hash_a' IS DISTINCT FROM p.hash_a OR x.evidence->>'hash_b' IS DISTINCT FROM p.hash_b)
          AND NOT EXISTS(SELECT 1 FROM news_event_review_applications app WHERE app.publication_id_a=p.a AND app.publication_id_b=p.b)))))))
     ORDER BY (CASE WHEN @archive THEN ja.queue_kind='Archive' AND jb.queue_kind='Archive' ELSE ja.queue_kind='Live' OR jb.queue_kind='Live' END) DESC,
