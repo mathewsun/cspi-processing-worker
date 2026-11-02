@@ -2,10 +2,11 @@ import hashlib
 import threading
 import numpy as np
 import onnxruntime as ort
+import fasttext
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from tokenizers import Tokenizer
-from constants import MODEL_SHA, REVISION
+from constants import MODEL_SHA, REVISION, LID_SHA
 
 # No downloads, remote code or model fallback at runtime.
 MODEL_ID = "minilm-ae06c001-q8-mean128-v1"
@@ -21,6 +22,8 @@ options.intra_op_num_threads = 2
 options.inter_op_num_threads = 1
 session = ort.InferenceSession("/model/model.onnx", sess_options=options, providers=["CPUExecutionProvider"])
 lock = threading.Lock()
+assert hashlib.sha256(open("/model/lid.176.ftz", "rb").read()).hexdigest() == LID_SHA
+language_model = fasttext.load_model("/model/lid.176.ftz")
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
 class Inputs(BaseModel):
@@ -29,7 +32,7 @@ class Inputs(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"model": MODEL_ID, "sha256": MODEL_SHA, "revision": REVISION, "tokenizer_sha256": TOKENIZER_SHA, "dimensions": 384, "max_tokens": 128}
+    return {"model": MODEL_ID, "sha256": MODEL_SHA, "revision": REVISION, "tokenizer_sha256": TOKENIZER_SHA, "language_sha256": LID_SHA, "dimensions": 384, "max_tokens": 128}
 
 @app.post("/v1/embeddings")
 def embeddings(request: Inputs):
@@ -51,4 +54,7 @@ def embeddings(request: Inputs):
         if not np.isfinite(vectors).all() or (norms < 1e-8).any():
             raise HTTPException(500, "Invalid embedding")
         vectors = vectors / norms
-    return {**health(), "data": [{"index": i, "embedding": v.tolist()} for i, v in enumerate(vectors)]}
+        # Detect from the headline, avoiding publisher boilerplate in the body.
+        # Raw pinned fastText API avoids its NumPy 2-incompatible array wrapper.
+        languages = [language_model.f.predict(s.split("\n", 1)[0].replace("\r", " "), 1, 0.0, "strict")[0] for s in request.input]
+    return {**health(), "data": [{"index": i, "embedding": v.tolist(), "language": languages[i][1].removeprefix("__label__"), "language_confidence": float(languages[i][0])} for i, v in enumerate(vectors)]}
