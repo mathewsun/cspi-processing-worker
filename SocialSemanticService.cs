@@ -2,9 +2,11 @@ namespace Cspi.ProcessingWorker;
 public sealed class SocialSemanticService(SocialSemanticStore store,LocalEventStore budget,string model,HttpClient embedding,ILogger logger,int maxSearches=16)
 {
  int turn;
+ public bool UsedInference{get;private set;}
  DateTimeOffset searchRetryAt;
  public async Task<bool> TryRun(HttpClient qwen,CancellationToken ct)
  {
+  UsedInference=false;
   if(DateTimeOffset.UtcNow<searchRetryAt)return false;
   var processed=false;
   var searchTimer=System.Diagnostics.Stopwatch.StartNew();
@@ -26,6 +28,7 @@ public sealed class SocialSemanticService(SocialSemanticStore store,LocalEventSt
     {
      var a=match.Article;
      judgeTimer=System.Diagnostics.Stopwatch.StartNew();
+     UsedInference=true;
      judgment=await LocalEventJudge.Infer(qwen,model,new(a.Id,0,a.Hash,post.Hash,a.Title,a.Body,a.Published,input.Title,LocalCountryClassifier.Limit(post.Body,1400),post.Published,post.Token),ct);
      judgeTimer.Stop();
      result=judgment.Decision;
