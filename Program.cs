@@ -2,6 +2,8 @@ using Cspi.ProcessingWorker;
 
 var builder = Host.CreateApplicationBuilder(args);
 var localCountry=LocalCountrySettings.Read(builder.Configuration);
+if(builder.Configuration.GetValue("SocialSemantic:Enabled",false)&&!builder.Configuration.GetValue("LocalEvent:Enabled",false))
+    throw new InvalidOperationException("SocialSemantic requires LocalEvent and its pinned shared inference scheduler");
 if(builder.Configuration.GetValue("LocalSemantic:AutoGroup",false)&&
    (!builder.Configuration.GetValue("LocalSemantic:Enabled",false)||!builder.Configuration.GetValue("ApprovedEvents:Enabled",false)))
     throw new InvalidOperationException("Automatic semantic grouping requires LocalSemantic and ApprovedEvents");
