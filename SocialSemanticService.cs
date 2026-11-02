@@ -7,9 +7,10 @@ public sealed class SocialSemanticService(SocialSemanticStore store,LocalEventSt
  {
   if(DateTimeOffset.UtcNow<searchRetryAt)return false;
   var processed=false;
+  var searchTimer=System.Diagnostics.Stopwatch.StartNew();
   // Bounded cheap searches may share a scheduler turn. One Qwen call ends the turn
   // and reserves the same persisted budget used by news-event judgments.
-  for(var scan=0;scan<Math.Clamp(maxSearches,1,16);scan++)
+  for(var scan=0;scan<Math.Clamp(maxSearches,1,16)&&searchTimer.Elapsed<TimeSpan.FromSeconds(10);scan++)
   {
   var post=await store.Claim(turn%5==4,ct);if(post is null)return processed;turn++;processed=true;
   System.Diagnostics.Stopwatch? judgeTimer=null;
