@@ -8,17 +8,27 @@ public sealed class LocalCountryStore(string connection,string revision,string m
     public async Task Initialize(CancellationToken ct)
     {
         await using var db=new NpgsqlConnection(connection);await db.OpenAsync(ct);
+        await using var tx=await db.BeginTransactionAsync(ct);
+        await using var exists=new NpgsqlCommand("SELECT 1 FROM news_country_ai_runs WHERE model_id=@revision",db,tx);
+        exists.Parameters.AddWithValue("revision",revision);
+        var known=await exists.ExecuteScalarAsync(ct) is not null;
+        if(!known)
+        {
+        // Wait for pre-run ingestion transactions, then publish the run before new inserts.
+        await using(var gate=new NpgsqlCommand("LOCK TABLE \"Publications\" IN SHARE MODE",db,tx))await gate.ExecuteNonQueryAsync(ct);
         await using var command=new NpgsqlCommand("""
             INSERT INTO news_country_ai_runs(model_id,model_name,model_digest,prompt_version,snapshot_max_id,live_cursor)
             SELECT @revision,@model,@digest,@prompt,coalesce(max("Id"),0),coalesce(max("Id"),0) FROM "Publications"
             ON CONFLICT DO NOTHING;
-            """,db);
+            """,db,tx);
         command.Parameters.AddWithValue("revision",revision);command.Parameters.AddWithValue("model",model);
         command.Parameters.AddWithValue("digest",digest);command.Parameters.AddWithValue("prompt",LocalCountryClassifier.PromptVersion);
         await command.ExecuteNonQueryAsync(ct);
-        await using var verify=new NpgsqlCommand("SELECT model_name=@model AND model_digest=@digest AND prompt_version=@prompt FROM news_country_ai_runs WHERE model_id=@revision",db);
+        }
+        await using var verify=new NpgsqlCommand("SELECT model_name=@model AND model_digest=@digest AND prompt_version=@prompt FROM news_country_ai_runs WHERE model_id=@revision",db,tx);
         verify.Parameters.AddWithValue("revision",revision);verify.Parameters.AddWithValue("model",model);verify.Parameters.AddWithValue("digest",digest);verify.Parameters.AddWithValue("prompt",LocalCountryClassifier.PromptVersion);
         if(await verify.ExecuteScalarAsync(ct) is not true)throw new InvalidOperationException("Queue revision belongs to another model/prompt");
+        await tx.CommitAsync(ct);
     }
     public async Task<int> Enqueue(CancellationToken ct)
     {

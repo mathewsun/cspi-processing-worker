@@ -9,6 +9,10 @@ The worker verifies the full expected model digest before claiming each job.
 All `Publications` existing at initialization form the archive snapshot. IDs are
 enqueued in transactions of 10,000 with a persistent cursor; all later IDs enter
 the Live queue without depending on semantic processing or minimum body length.
+An insert trigger writes each new job in the ingestion transaction: a lower ID
+committed after the cursor passes it cannot be skipped. Initializing a new run
+briefly takes a SHARE table lock to include all pre-run ingestion transactions in
+its snapshot. Reapplying SQL 018 repairs any missing jobs before trigger cutover.
 Claims allocate four slots to Live, one to Archive, with fallback to the other
 queue. Each queue is FIFO by publication ID. There is one active local classifier
 across instances/revisions (Postgres session advisory lock 23011/10).

@@ -73,4 +73,24 @@ Check(await Count("SELECT count(*) FROM \"PublicationCountries\" WHERE \"Publica
 var retry=(await store.Claim(true,default))!;await store.Fail(retry,"fixture failure",default);
 Check(await Count("SELECT count(*) FROM news_country_llm_jobs WHERE state='Failed' AND attempts=1 AND lease_owner IS NULL")==1,"retry state durable, lease released");
 Check(LocalCountryClassifier.Segments(new(10,"Only title",null,"" )).Length==1,"title-only input supported");
+await using(var delayed=new NpgsqlConnection(cs))
+{
+ await delayed.OpenAsync();await using var tx=await delayed.BeginTransactionAsync();
+ await using(var insert=new NpgsqlCommand("INSERT INTO \"Publications\" VALUES(5,'Late committing news',NULL)",delayed,tx))await insert.ExecuteNonQueryAsync();
+ await Exec("INSERT INTO \"Publications\" VALUES(6,'Earlier commit with higher ID',NULL)");
+ await store.Enqueue(default);
+ Check(await Count("SELECT live_cursor FROM news_country_ai_runs WHERE model_id='check-v1'")==6,"cursor can pass uncommitted lower ID");
+ await tx.CommitAsync();
+ Check(await Count("SELECT count(*) FROM news_country_llm_jobs WHERE publication_id=5 AND model_id='check-v1' AND queue_kind='Live'")==1,"late lower-ID commit enqueues transactionally without cursor rescan");
+}
+await using(var delayed=new NpgsqlConnection(cs))
+{
+ await delayed.OpenAsync();await using var tx=await delayed.BeginTransactionAsync();
+ await using(var insert=new NpgsqlCommand("INSERT INTO \"Publications\" VALUES(7,'Pre-run uncommitted news',NULL)",delayed,tx))await insert.ExecuteNonQueryAsync();
+ await Exec("INSERT INTO \"Publications\" VALUES(8,'Visible higher ID before new run',NULL)");
+ var next=new LocalCountryStore(cs,"check-v2","check-model","check-digest");var initialize=next.Initialize(default);
+ await Task.Delay(200);Check(!initialize.IsCompleted,"new-run snapshot waits for existing ingestion transactions");
+ await tx.CommitAsync();await initialize;await next.Enqueue(default);
+ Check(await Count("SELECT count(*) FROM news_country_llm_jobs WHERE publication_id=7 AND model_id='check-v2'")==1,"pre-run late commit included in archive snapshot");
+}
 Console.WriteLine("Country AI checks passed");

@@ -38,6 +38,26 @@ DROP TRIGGER IF EXISTS trg_country_ai_article_changed ON "Publications";
 CREATE TRIGGER trg_country_ai_article_changed AFTER UPDATE OF "Title","OriginalText" ON "Publications"
  FOR EACH ROW EXECUTE FUNCTION news_recheck_country_changed_article();
 
+-- Transactional discovery: sequence IDs do not imply commit order. A late commit
+-- below the live cursor must still carry its own classification job.
+CREATE OR REPLACE FUNCTION news_enqueue_country_inserted_article()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ INSERT INTO news_country_llm_jobs(publication_id,model_id,queue_kind)
+ SELECT NEW."Id",r.model_id,CASE WHEN NEW."Id"<=r.snapshot_max_id THEN 'Archive' ELSE 'Live' END
+ FROM news_country_ai_runs r ON CONFLICT DO NOTHING;
+ RETURN NULL;
+END $$;
+DROP TRIGGER IF EXISTS trg_country_ai_article_inserted ON "Publications";
+CREATE TRIGGER trg_country_ai_article_inserted AFTER INSERT ON "Publications"
+ FOR EACH ROW EXECUTE FUNCTION news_enqueue_country_inserted_article();
+-- Repair any previously missed IDs while the trigger DDL fences concurrent writes.
+INSERT INTO news_country_llm_jobs(publication_id,model_id,queue_kind)
+SELECT p."Id",r.model_id,CASE WHEN p."Id"<=r.snapshot_max_id THEN 'Archive' ELSE 'Live' END
+FROM "Publications" p CROSS JOIN news_country_ai_runs r
+WHERE NOT EXISTS(SELECT 1 FROM news_country_llm_jobs j WHERE j.publication_id=p."Id" AND j.model_id=r.model_id)
+ON CONFLICT DO NOTHING;
+
 CREATE OR REPLACE FUNCTION news_exclude_publication_country_manual(p_id integer,c_id integer,actor text)
 RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
