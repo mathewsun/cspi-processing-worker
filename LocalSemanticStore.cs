@@ -69,11 +69,17 @@ public sealed class LocalSemanticStore(string connection)
    """,("id",article.Id),("r",Revision),("hash",article.Hash),("vector",LocalSemantic.Vector(vector)),("title",article.Title),("body",article.Body),("date",article.Published),("source",article.Source)))await save.ExecuteNonQueryAsync(ct);
   var matches=new List<(int Id,string Hash,float Score)>();
   await using(var near=Cmd(db,tx,"""
-   SELECT v.publication_id,v.input_hash,1-(v.embedding<=>@vector::vector) AS score
-   FROM news_local_semantic_vectors v JOIN news_local_semantic_jobs j ON j.publication_id=v.publication_id AND j.model_revision=v.model_revision
+   WITH near AS MATERIALIZED(
+    SELECT v.publication_id,v.input_hash,v.model_revision,v.embedding<=>@vector::vector AS distance
+    FROM news_local_semantic_vectors v
+    WHERE v.model_revision=@r AND v.publication_id<>@id AND v.published_at BETWEEN @from AND @to
+    ORDER BY v.embedding<=>@vector::vector LIMIT 256
+   )
+   SELECT v.publication_id,v.input_hash,1-v.distance AS score
+   FROM near v JOIN news_local_semantic_jobs j ON j.publication_id=v.publication_id AND j.model_revision=v.model_revision
    JOIN "Publications" p ON p."Id"=v.publication_id LEFT JOIN "Sources" s ON s."Id"=p."SourceId"
-   WHERE v.model_revision=@r AND v.publication_id<>@id AND v.published_at BETWEEN @from AND @to AND j.state='Completed' AND j.dirty_generation=j.observed_generation AND coalesce(s."CollectionKind",'')<>'Social'
-   ORDER BY v.embedding<=>@vector::vector LIMIT 64;
+   WHERE j.state='Completed' AND j.dirty_generation=j.observed_generation AND coalesce(s."CollectionKind",'')<>'Social'
+   ORDER BY v.distance LIMIT 64;
    """,("r",Revision),("id",article.Id),("vector",LocalSemantic.Vector(vector)),("from",article.Published.AddHours(-48)),("to",article.Published.AddHours(48))))
   {await using var rd=await near.ExecuteReaderAsync(ct);while(await rd.ReadAsync(ct)){var score=(float)Math.Clamp(rd.GetDouble(2),-1,1);if(score>=0.72)matches.Add((rd.GetInt32(0),rd.GetString(1),score));}}
   var index=0;

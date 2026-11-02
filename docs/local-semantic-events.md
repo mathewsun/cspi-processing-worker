@@ -21,7 +21,9 @@ throughput guarantee). Locked Python dependencies and base-image digest are kept
 The existing Qwen3 4B alias/digest is unchanged. Event judgments share its one
 inference stream with countries and comments; a persisted 9x-duration cooldown
 reserves approximately 10% wall time for event checks. Comments retain their
-own roughly 10% share; countries use the remaining slots. No second Qwen copy,
+own roughly 10% share. Event checks prefer live-news pairs for four claims then
+one archive pair, with fallback, so high-similarity archive backlog cannot keep
+new events waiting indefinitely. Countries use the remaining slots. No second Qwen copy,
 paid endpoint, GPU or provider credential is introduced.
 
 ## Durable pipeline
@@ -46,8 +48,11 @@ so concurrently embedded pairs cannot miss each other. The model/tokenizer
 digests, output count, indices, finite values and unit norms are validated.
 No fabricated vectors/results are saved after an error.
 
-[pgvector](https://github.com/pgvector/pgvector) HNSW/cosine search retrieves at
-most 64 candidates within +/-48 publisher hours with iterative filtered scans
+[pgvector](https://github.com/pgvector/pgvector) HNSW/cosine search retrieves a
+materialized pool of at most 256 neighbors before joining current job/source
+metadata, then keeps at most 64 validated candidates within +/-48 publisher hours.
+This bounds metadata joins and avoids the planner scanning all completed jobs
+before ranking vectors. Iterative filtered scans are
 capped at 20,000 tuples. Up to eight neighbors scoring >=0.72 are retained;
 the top three scoring >=0.80 enter the Qwen queue. These are initial operational
 thresholds, not calibrated probabilities. ANN is approximate and may miss pairs.
