@@ -4,7 +4,7 @@ public sealed class SocialSemanticService(SocialSemanticStore store,LocalEventSt
  int turn;
  public async Task<bool> TryRun(HttpClient qwen,CancellationToken ct)
  {
-  var post=await store.Claim(turn++%5==4,ct);if(post is null)return false;var timer=System.Diagnostics.Stopwatch.StartNew();
+  var post=await store.Claim(turn%5==4,ct);if(post is null)return false;turn++;var timer=System.Diagnostics.Stopwatch.StartNew();
   try
   {
    var input=new SemanticArticle(0,LocalCountryClassifier.Limit(post.Body,600),null,post.Published,null,0,"");
