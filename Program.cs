@@ -2,6 +2,8 @@ using Cspi.ProcessingWorker;
 
 var builder = Host.CreateApplicationBuilder(args);
 var localCountry=LocalCountrySettings.Read(builder.Configuration);
+if(builder.Configuration.GetValue("LocalDiscussion:Enabled",false)&&!localCountry.Enabled)
+    throw new InvalidOperationException("LocalDiscussion requires the shared LocalCountry inference scheduler");
 if(localCountry.Enabled && new[]{"CountryLlm:Enabled","CountryLlm:AutoEnqueue","CountryRoles:Enabled","CountryAuto:Enabled","CountryRelations:Enabled"}.Any(k=>builder.Configuration.GetValue(k,false)))
     throw new InvalidOperationException("Disable legacy country writers/queue before enabling LocalCountry");
 builder.Services.AddSingleton(localCountry);
