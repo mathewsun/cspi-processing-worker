@@ -6,7 +6,7 @@ public sealed class LocalEventStore(string connection)
  const string Revision=LocalSemantic.Revision;
  static NpgsqlCommand Cmd(NpgsqlConnection db,NpgsqlTransaction? tx,string sql,params(string,object?)[] args)=>LocalSemanticStore.Cmd(db,tx,sql,args);
  async Task<NpgsqlConnection> Open(CancellationToken ct){var db=new NpgsqlConnection(connection);await db.OpenAsync(ct);return db;}
- public async Task<EventPair?> Claim(CancellationToken ct)
+ public async Task<EventPair?> Claim(CancellationToken ct,bool preferArchive=false)
  {
   await using var db=await Open(ct);await using var cmd=Cmd(db,null,"""
    WITH due AS(
@@ -19,11 +19,12 @@ public sealed class LocalEventStore(string connection)
      AND EXISTS(SELECT 1 FROM news_local_semantic_control WHERE enabled AND model_revision=@r AND next_event_slot<=now())
      AND NOT EXISTS(SELECT 1 FROM news_event_pair_blocks x WHERE x.publication_id_a=p.a AND x.publication_id_b=p.b)
      AND NOT EXISTS(SELECT 1 FROM news_event_link_reviews x WHERE x.publication_id_a=p.a AND x.publication_id_b=p.b AND (x.decision='Rejected' OR (x.decision='Approved' AND (coalesce(x.evidence->>'method','')<>'LocalEventJudgeV1' OR x.evidence->>'human_decision'='true'))))
-    ORDER BY p.similarity DESC,p.created_at DESC LIMIT 1 FOR UPDATE OF p SKIP LOCKED
+    ORDER BY (CASE WHEN @archive THEN ja.queue_kind='Archive' AND jb.queue_kind='Archive' ELSE ja.queue_kind='Live' OR jb.queue_kind='Live' END) DESC,
+      p.similarity DESC,p.created_at DESC LIMIT 1 FOR UPDATE OF p SKIP LOCKED
    ), leased AS(UPDATE news_local_semantic_pairs p SET lease_token=@token,lease_until=now()+interval '5 minutes' FROM due WHERE p.a=due.a AND p.b=due.b AND p.model_revision=@r RETURNING p.*)
    SELECT p.a,p.b,p.hash_a,p.hash_b,a.title,a.body,a.published_at,b.title,b.body,b.published_at,p.lease_token FROM leased p
    JOIN news_local_semantic_vectors a ON a.publication_id=p.a AND a.model_revision=p.model_revision JOIN news_local_semantic_vectors b ON b.publication_id=p.b AND b.model_revision=p.model_revision;
-   """,("r",Revision),("token",Guid.NewGuid().ToString("N")));
+   """,("r",Revision),("archive",preferArchive),("token",Guid.NewGuid().ToString("N")));
   await using var r=await cmd.ExecuteReaderAsync(ct);return await r.ReadAsync(ct)?new(r.GetInt32(0),r.GetInt32(1),r.GetString(2),r.GetString(3),r.GetString(4),r.IsDBNull(5)?null:r.GetString(5),r.GetDateTime(6),r.GetString(7),r.IsDBNull(8)?null:r.GetString(8),r.GetDateTime(9),r.GetString(10)):null;
  }
  // Called while holding the event-graph advisory lock. Lock parents before jobs
