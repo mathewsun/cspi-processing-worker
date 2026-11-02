@@ -1,7 +1,10 @@
 # Local Qwen3 country classification
 
 `LocalCountry:Enabled=true` activates a durable queue and one inference stream.
-Apply SQL 018 after 017. Use the same pinned model and prompt revision for the
+Stop processing-worker while applying SQL 018 after 017, then restart it.
+The migration takes the publication lock before the queue lock to match ingestion
+triggers; the stopped processor cannot hold the queue while waiting on its FK.
+Use the same pinned model and prompt revision for the
 whole run; startup rejects a revision reused with different metadata. Ollama is
 internal at `http://country-model:11434/`; no host port or API key is required.
 The worker verifies the full expected model digest before claiming each job.

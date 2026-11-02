@@ -1,5 +1,8 @@
 -- Local model queue extension. Apply after 017; no historical classifications are overwritten.
 BEGIN;
+-- Stop processing-worker before migration. Ingestion locks Publication before
+-- its job trigger, so acquire this lock before ALTERing the queue as well.
+LOCK TABLE "Publications" IN ACCESS EXCLUSIVE MODE;
 ALTER TABLE news_country_llm_jobs
  ADD COLUMN IF NOT EXISTS queue_kind text NOT NULL DEFAULT 'Archive',
  ADD COLUMN IF NOT EXISTS started_at timestamptz,
