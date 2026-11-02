@@ -63,10 +63,11 @@ public sealed class LocalSemanticStore(string connection)
    VALUES(@id,@r,@hash,@vector::vector,@title,@body,@date,@source)
    ON CONFLICT(publication_id,model_revision) DO UPDATE SET input_hash=excluded.input_hash,embedding=excluded.embedding,title=excluded.title,body=excluded.body,published_at=excluded.published_at,source_id=excluded.source_id,embedded_at=now();
    UPDATE news_local_semantic_jobs SET state='Completed',observed_generation=dirty_generation,processed_at=now(),lease_token=NULL,lease_until=NULL,last_error=NULL,attempts=0 WHERE publication_id=@id AND model_revision=@r;
+   UPDATE news_local_semantic_vectors SET language=@language,language_confidence=@language_confidence WHERE publication_id=@id AND model_revision=@r;
    DELETE FROM news_semantic_candidates WHERE model_id=@r AND (publication_id_a=@id OR publication_id_b=@id);
    UPDATE news_local_semantic_pairs SET state='Invalidated',lease_token=NULL,lease_until=NULL
     WHERE model_revision=@r AND ((a=@id AND hash_a<>@hash) OR (b=@id AND hash_b<>@hash));
-   """,("id",article.Id),("r",Revision),("hash",article.Hash),("vector",LocalSemantic.Vector(vector)),("title",article.Title),("body",article.Body),("date",article.Published),("source",article.Source)))await save.ExecuteNonQueryAsync(ct);
+   """,("id",article.Id),("r",Revision),("hash",article.Hash),("vector",LocalSemantic.Vector(vector)),("title",article.Title),("body",article.Body),("date",article.Published),("source",article.Source),("language",article.Language),("language_confidence",article.LanguageConfidence)))await save.ExecuteNonQueryAsync(ct);
   var matches=new List<(int Id,string Hash,float Score)>();
   await using(var near=Cmd(db,tx,"""
    WITH near AS MATERIALIZED(

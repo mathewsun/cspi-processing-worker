@@ -5,7 +5,7 @@ COPY requirements.lock ./
 RUN pip install --no-cache-dir -r requirements.lock
 COPY download.py constants.py ./
 RUN python download.py
-COPY server.py ./
+COPY server.py LANGUAGE-MODEL.md ./
 USER 10001:10001
 EXPOSE 8080
 CMD ["uvicorn","server:app","--host","0.0.0.0","--port","8080","--workers","1","--limit-concurrency","8","--no-access-log"]

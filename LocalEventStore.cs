@@ -18,7 +18,11 @@ public sealed class LocalEventStore(string connection)
     WHERE p.model_revision=@r AND p.state IN('Pending','Failed') AND p.attempts<3 AND p.next_at<=now() AND (p.lease_until IS NULL OR p.lease_until<now())
      AND EXISTS(SELECT 1 FROM news_local_semantic_control WHERE enabled AND model_revision=@r AND next_event_slot<=now())
      AND NOT EXISTS(SELECT 1 FROM news_event_pair_blocks x WHERE x.publication_id_a=p.a AND x.publication_id_b=p.b)
-     AND NOT EXISTS(SELECT 1 FROM news_event_link_reviews x WHERE x.publication_id_a=p.a AND x.publication_id_b=p.b AND (x.decision='Rejected' OR (x.decision='Approved' AND (coalesce(x.evidence->>'method','')<>'LocalEventJudgeV1' OR x.evidence->>'human_decision'='true'))))
+     AND NOT EXISTS(SELECT 1 FROM news_event_link_reviews x WHERE x.publication_id_a=p.a AND x.publication_id_b=p.b AND (x.decision='Rejected' OR (x.decision='Approved' AND
+       (x.evidence->>'human_decision'='true' OR (coalesce(x.evidence->>'method','')<>'LocalEventJudgeV1' AND NOT(
+         coalesce(x.evidence->>'method','')='LocalSemanticAutoV1' AND coalesce(x.evidence->>'human_decision','false')<>'true'
+         AND (x.evidence->>'hash_a' IS DISTINCT FROM p.hash_a OR x.evidence->>'hash_b' IS DISTINCT FROM p.hash_b)
+         AND NOT EXISTS(SELECT 1 FROM news_event_review_applications app WHERE app.publication_id_a=p.a AND app.publication_id_b=p.b)))))))
     ORDER BY (CASE WHEN @archive THEN ja.queue_kind='Archive' AND jb.queue_kind='Archive' ELSE ja.queue_kind='Live' OR jb.queue_kind='Live' END) DESC,
       p.similarity DESC,p.created_at DESC LIMIT 1 FOR UPDATE OF p SKIP LOCKED
    ), leased AS(UPDATE news_local_semantic_pairs p SET lease_token=@token,lease_until=now()+interval '5 minutes' FROM due WHERE p.a=due.a AND p.b=due.b AND p.model_revision=@r RETURNING p.*)
@@ -57,7 +61,10 @@ public sealed class LocalEventStore(string connection)
    WHERE NOT EXISTS(SELECT 1 FROM news_event_pair_blocks WHERE publication_id_a=@a AND publication_id_b=@b)
    ON CONFLICT(publication_id_a,publication_id_b) DO UPDATE SET score=excluded.score,evidence=excluded.evidence,decision=excluded.decision,reviewed_at=excluded.reviewed_at,updated_at=now()
     WHERE coalesce(r.evidence->>'human_decision','false')<>'true'
-      AND (r.decision='Pending' OR (r.evidence->>'method'='LocalEventJudgeV1' AND r.decision='Approved'));
+      AND (r.decision='Pending' OR (r.evidence->>'method'='LocalEventJudgeV1' AND r.decision='Approved') OR
+        (r.decision='Approved' AND r.evidence->>'method'='LocalSemanticAutoV1'
+         AND (r.evidence->>'hash_a' IS DISTINCT FROM @ha OR r.evidence->>'hash_b' IS DISTINCT FROM @hb)
+         AND NOT EXISTS(SELECT 1 FROM news_event_review_applications app WHERE app.publication_id_a=@a AND app.publication_id_b=@b)));
    """,("a",pair.A),("b",pair.B),("r",Revision),("ha",pair.HashA),("hb",pair.HashB),("judge",judgeRevision),("decision",judgment.Decision),("confidence",judgment.Confidence),("reason",judgment.Reason),("score",score),
    ("review",judgment.Decision=="same_event"&&judgment.Confidence>=0.90&&!judgment.Contradiction&&!judgment.Prechecked?"Approved":"Pending"),
    ("evidence",JsonSerializer.Serialize(new{method="LocalEventJudgeV1",embedding_model=Revision,judge_model=judgeRevision,hash_a=pair.HashA,hash_b=pair.HashB,relation=judgment.Decision,confidence=judgment.Confidence,reason=judgment.Reason,contradiction=judgment.Contradiction,prechecked=judgment.Prechecked})));

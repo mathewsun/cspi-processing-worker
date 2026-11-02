@@ -4,9 +4,9 @@ using System.Text.Json;
 namespace Cspi.ProcessingWorker;
 
 /// <summary>
-/// Applies only explicitly Approved pairs. Never auto-approves candidate matches.
+/// Materializes approved pairs; optional semantic grouping approves strong matches automatically.
 /// A transaction-scoped advisory lock serializes event graph changes across replicas.
-/// Conflicting event clusters are recorded for manual resolution, never merged blindly.
+/// Split blocks and operator changes protect clusters from automatic merging.
 /// </summary>
 public sealed class ApprovedEventService(
     IConfiguration configuration, ILogger<ApprovedEventService> logger) : BackgroundService
@@ -48,16 +48,19 @@ public sealed class ApprovedEventService(
             "SELECT pg_advisory_xact_lock(23011, 7)", db, tx))
             await guard.ExecuteNonQueryAsync(ct);
 
+        if (configuration.GetValue("LocalSemantic:AutoGroup", false))
+            await SemanticAutoEvents.Promote(db,tx,ct);
+
         int a, b;
         float score;
         string evidence;
         var localGuard=configuration.GetValue("LocalSemantic:Enabled",false)?"""
-            AND (coalesce(r.evidence->>'method','')<>'LocalEventJudgeV1' OR r.evidence->>'human_decision'='true' OR EXISTS(
+            AND (coalesce(r.evidence->>'method','') NOT IN('LocalEventJudgeV1','LocalSemanticAutoV1') OR r.evidence->>'human_decision'='true' OR EXISTS(
               SELECT 1 FROM news_local_semantic_vectors va JOIN news_local_semantic_vectors vb ON vb.publication_id=r.publication_id_b AND vb.model_revision=va.model_revision
               JOIN news_local_semantic_jobs ja ON ja.publication_id=va.publication_id AND ja.model_revision=va.model_revision AND ja.state='Completed' AND ja.dirty_generation=ja.observed_generation
               JOIN news_local_semantic_jobs jb ON jb.publication_id=vb.publication_id AND jb.model_revision=vb.model_revision AND jb.state='Completed' AND jb.dirty_generation=jb.observed_generation
               WHERE va.publication_id=r.publication_id_a AND va.model_revision=r.evidence->>'embedding_model' AND va.input_hash=r.evidence->>'hash_a' AND vb.input_hash=r.evidence->>'hash_b'))
-            """:"AND (coalesce(r.evidence->>'method','')<>'LocalEventJudgeV1' OR r.evidence->>'human_decision'='true')";
+            """:"AND (coalesce(r.evidence->>'method','') NOT IN('LocalEventJudgeV1','LocalSemanticAutoV1') OR r.evidence->>'human_decision'='true')";
         await using (var command = new NpgsqlCommand($$"""
             SELECT r.publication_id_a, r.publication_id_b, r.score,r.evidence::text
             FROM news_event_link_reviews r
@@ -89,7 +92,7 @@ public sealed class ApprovedEventService(
         using(var json=JsonDocument.Parse(evidence))
         {
             var e=json.RootElement;
-            if(e.TryGetProperty("method",out var method)&&method.GetString()=="LocalEventJudgeV1"&&
+            if(e.TryGetProperty("method",out var method)&&(method.GetString() is "LocalEventJudgeV1" or "LocalSemanticAutoV1")&&
                 !(e.TryGetProperty("human_decision",out var human)&&human.ValueKind==JsonValueKind.True)&&
                 !await LocalEventStore.Current(db,tx,a,b,e.GetProperty("hash_a").GetString()!,e.GetProperty("hash_b").GetString()!,ct))return false;
         }
@@ -103,9 +106,9 @@ public sealed class ApprovedEventService(
         }
         if (eventA.HasValue && eventB.HasValue && eventA != eventB)
         {
-            // Only a pristine, one-article provisional event can be folded into
-            // another event. Never merge established multi-article clusters here.
-            var merged = await TryMergeProvisional(db, tx, eventA.Value, eventB.Value, ct);
+            // Automatic groups can merge; operator-owned groups remain protected.
+            var merged = configuration.GetValue("LocalSemantic:AutoGroup",false) && await TryMergeAutomatic(db,tx,eventA.Value,eventB.Value,ct);
+            if (!merged) merged = await TryMergeProvisional(db, tx, eventA.Value, eventB.Value, ct);
             if (!merged)
             {
                 await Record(db, tx, a, b, null, "Conflict",
@@ -146,6 +149,35 @@ public sealed class ApprovedEventService(
             EXISTS(SELECT 1 FROM news_event_pair_blocks x WHERE x.publication_id_a=LEAST(l.id,r.id) AND x.publication_id_b=GREATEST(l.id,r.id)) OR
             EXISTS(SELECT 1 FROM news_event_link_reviews x WHERE x.publication_id_a=LEAST(l.id,r.id) AND x.publication_id_b=GREATEST(l.id,r.id) AND x.decision='Rejected')));
           """,("a",a),("b",b),("ea",eventA),("eb",eventB));return await cmd.ExecuteScalarAsync(ct) is true;
+    }
+
+    private static async Task<bool> TryMergeAutomatic(NpgsqlConnection db,NpgsqlTransaction tx,int target,int source,CancellationToken ct)
+    {
+        // Keep operator changes. Cross-cluster split/rejection checks ran under this graph lock.
+        await using var safe=LocalSemanticStore.Cmd(db,tx,"""
+          SELECT NOT EXISTS(SELECT 1 FROM "EventPublications" ep WHERE ep."EventId" IN(@source,@target)
+            AND (ep."Method" NOT IN('ApprovedPairV1','ProvisionalSingletonV1') OR NOT EXISTS(
+              SELECT 1 FROM news_event_review_applications a JOIN news_event_link_reviews r
+                ON r.publication_id_a=a.publication_id_a AND r.publication_id_b=a.publication_id_b
+              WHERE a.event_id=ep."EventId" AND a.outcome='Linked' AND r.evidence->>'method' IN('LocalSemanticAutoV1','LocalEventJudgeV1')
+                AND coalesce(r.evidence->>'human_decision','false')<>'true')))
+           AND NOT EXISTS(SELECT 1 FROM news_event_actions WHERE event_id IN(@source,@target) AND actor<>'processing-worker')
+           AND NOT EXISTS(SELECT 1 FROM news_event_link_reviews r JOIN "EventPublications" ep
+             ON ep."PublicationId" IN(r.publication_id_a,r.publication_id_b)
+             WHERE ep."EventId" IN(@source,@target) AND r.evidence->>'human_decision'='true')
+           AND NOT EXISTS(SELECT 1 FROM "Publications" WHERE "EventId" IN(@source,@target))
+           AND NOT EXISTS(SELECT 1 FROM "EventCountries" ec WHERE ec."EventId" IN(@source,@target) AND NOT EXISTS(
+             SELECT 1 FROM news_event_country_ownership own WHERE own.event_id=ec."EventId" AND own.country_profile_id=ec."CountryProfileId" AND own.owner='EventGeographyReconciliationV1'));
+          """,("source",source),("target",target));
+        if(await safe.ExecuteScalarAsync(ct) is not true)return false;
+        await using var move=LocalSemanticStore.Cmd(db,tx,"""
+          INSERT INTO "EventPublications"("EventId","PublicationId","Similarity","Method","LinkedAt")
+            SELECT @target,"PublicationId","Similarity","Method",now() FROM "EventPublications" WHERE "EventId"=@source ON CONFLICT DO NOTHING;
+          DELETE FROM "EventPublications" WHERE "EventId"=@source;
+          DELETE FROM "EventCountries" WHERE "EventId"=@source;
+          UPDATE news_event_review_applications SET event_id=@target WHERE event_id=@source;
+          INSERT INTO news_event_actions(event_id,action,actor,details) VALUES(@target,'AutoMergeSemantic','processing-worker',jsonb_build_object('source_event_id',@source));
+          """,("source",source),("target",target));await move.ExecuteNonQueryAsync(ct);return true;
     }
 
     private static async Task<bool> TryMergeProvisional(
