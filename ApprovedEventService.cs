@@ -1,4 +1,5 @@
 using Npgsql;
+using System.Text.Json;
 
 namespace Cspi.ProcessingWorker;
 
@@ -36,7 +37,7 @@ public sealed class ApprovedEventService(
         }
     }
 
-    private async Task<bool> ApplyOne(CancellationToken ct)
+    public async Task<bool> ApplyOne(CancellationToken ct)
     {
         await using var db = new NpgsqlConnection(connection);
         await db.OpenAsync(ct);
@@ -49,8 +50,16 @@ public sealed class ApprovedEventService(
 
         int a, b;
         float score;
-        await using (var command = new NpgsqlCommand("""
-            SELECT r.publication_id_a, r.publication_id_b, r.score
+        string evidence;
+        var localGuard=configuration.GetValue("LocalSemantic:Enabled",false)?"""
+            AND (coalesce(r.evidence->>'method','')<>'LocalEventJudgeV1' OR r.evidence->>'human_decision'='true' OR EXISTS(
+              SELECT 1 FROM news_local_semantic_vectors va JOIN news_local_semantic_vectors vb ON vb.publication_id=r.publication_id_b AND vb.model_revision=va.model_revision
+              JOIN news_local_semantic_jobs ja ON ja.publication_id=va.publication_id AND ja.model_revision=va.model_revision AND ja.state='Completed' AND ja.dirty_generation=ja.observed_generation
+              JOIN news_local_semantic_jobs jb ON jb.publication_id=vb.publication_id AND jb.model_revision=vb.model_revision AND jb.state='Completed' AND jb.dirty_generation=jb.observed_generation
+              WHERE va.publication_id=r.publication_id_a AND va.model_revision=r.evidence->>'embedding_model' AND va.input_hash=r.evidence->>'hash_a' AND vb.input_hash=r.evidence->>'hash_b'))
+            """:"AND (coalesce(r.evidence->>'method','')<>'LocalEventJudgeV1' OR r.evidence->>'human_decision'='true')";
+        await using (var command = new NpgsqlCommand($$"""
+            SELECT r.publication_id_a, r.publication_id_b, r.score,r.evidence::text
             FROM news_event_link_reviews r
             WHERE r.decision='Approved'
               AND NOT EXISTS (
@@ -61,6 +70,7 @@ public sealed class ApprovedEventService(
                 SELECT 1 FROM news_event_review_applications x
                 WHERE x.publication_id_a=r.publication_id_a
                   AND x.publication_id_b=r.publication_id_b)
+            {{localGuard}}
             ORDER BY r.reviewed_at NULLS LAST, r.created_at
             LIMIT 1 FOR UPDATE OF r SKIP LOCKED;
             """, db, tx))
@@ -68,16 +78,29 @@ public sealed class ApprovedEventService(
             await using var reader = await command.ExecuteReaderAsync(ct);
             if (!await reader.ReadAsync(ct))
             {
-                await tx.CommitAsync(ct);
                 return false;
             }
             a = reader.GetInt32(0);
             b = reader.GetInt32(1);
             score = reader.GetFloat(2);
+            evidence=reader.GetString(3);
+        }
+
+        using(var json=JsonDocument.Parse(evidence))
+        {
+            var e=json.RootElement;
+            if(e.TryGetProperty("method",out var method)&&method.GetString()=="LocalEventJudgeV1"&&
+                !(e.TryGetProperty("human_decision",out var human)&&human.ValueKind==JsonValueKind.True)&&
+                !await LocalEventStore.Current(db,tx,a,b,e.GetProperty("hash_a").GetString()!,e.GetProperty("hash_b").GetString()!,ct))return false;
         }
 
         var eventA = await ExistingEvent(db, tx, a, ct);
         var eventB = await ExistingEvent(db, tx, b, ct);
+        if(await ClusterBlocked(db,tx,a,b,eventA,eventB,ct))
+        {
+            await Record(db,tx,a,b,null,"Conflict","A manual rejection or split blocks cluster membership",ct);
+            await tx.CommitAsync(ct);return true;
+        }
         if (eventA.HasValue && eventB.HasValue && eventA != eventB)
         {
             // Only a pristine, one-article provisional event can be folded into
@@ -112,6 +135,17 @@ public sealed class ApprovedEventService(
         await tx.CommitAsync(ct);
         logger.LogInformation("Applied approved pair {A}/{B} to event {Event}", a, b, eventId);
         return true;
+    }
+
+    private static async Task<bool> ClusterBlocked(NpgsqlConnection db,NpgsqlTransaction tx,int a,int b,int? eventA,int? eventB,CancellationToken ct)
+    {
+        await using var cmd=LocalSemanticStore.Cmd(db,tx,"""
+          WITH left_members AS(SELECT @a::int AS id UNION SELECT "PublicationId" FROM "EventPublications" WHERE "EventId"=@ea),
+               right_members AS(SELECT @b::int AS id UNION SELECT "PublicationId" FROM "EventPublications" WHERE "EventId"=@eb)
+          SELECT EXISTS(SELECT 1 FROM left_members l CROSS JOIN right_members r WHERE l.id<>r.id AND (
+            EXISTS(SELECT 1 FROM news_event_pair_blocks x WHERE x.publication_id_a=LEAST(l.id,r.id) AND x.publication_id_b=GREATEST(l.id,r.id)) OR
+            EXISTS(SELECT 1 FROM news_event_link_reviews x WHERE x.publication_id_a=LEAST(l.id,r.id) AND x.publication_id_b=GREATEST(l.id,r.id) AND x.decision='Rejected')));
+          """,("a",a),("b",b),("ea",eventA),("eb",eventB));return await cmd.ExecuteScalarAsync(ct) is true;
     }
 
     private static async Task<bool> TryMergeProvisional(

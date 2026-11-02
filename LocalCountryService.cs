@@ -44,6 +44,7 @@ public sealed class LocalCountryService(LocalCountrySettings settings,LocalCount
             if(await gate.ExecuteScalarAsync(ct) is not true)throw new InvalidOperationException("Another local country classifier is active");
         var client=factory.CreateClient("local-country");var turn=0;var catalog=await store.Countries(ct);var refreshed=DateTimeOffset.UtcNow;
         LocalDiscussionService? discussion=null;
+        LocalEventService? events=config.GetValue("LocalEvent:Enabled",false)?new(new LocalEventStore(config.GetConnectionString("DefaultConnection")!),settings.Model,logger):null;
         if(config.GetValue("LocalDiscussion:Enabled",false))
         {
             discussion=new(new LocalDiscussionStore(config.GetConnectionString("DefaultConnection")!,settings.Model,settings.Digest),settings.Model,logger);
@@ -56,6 +57,7 @@ public sealed class LocalCountryService(LocalCountrySettings settings,LocalCount
             {
                 await using(var alive=new NpgsqlCommand("SELECT 1",singleton))await alive.ExecuteScalarAsync(ct);
                 await VerifyModel(client,ct);
+                if(events is not null && await events.TryRun(client,ct))continue;
                 if(discussion is not null && await discussion.TryRun(client,ct))continue;
                 if(DateTimeOffset.UtcNow-refreshed>TimeSpan.FromMinutes(5)){catalog=await store.Countries(ct);refreshed=DateTimeOffset.UtcNow;}
                 article=await store.Claim(turn++%5==4,ct); // Four live slots, then one guaranteed archive slot; fallback if either is empty.
