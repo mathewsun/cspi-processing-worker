@@ -2,6 +2,9 @@ using Cspi.ProcessingWorker;
 
 var builder = Host.CreateApplicationBuilder(args);
 var localCountry=LocalCountrySettings.Read(builder.Configuration);
+if(builder.Configuration.GetValue("LocalSemantic:AutoGroup",false)&&
+   (!builder.Configuration.GetValue("LocalSemantic:Enabled",false)||!builder.Configuration.GetValue("ApprovedEvents:Enabled",false)))
+    throw new InvalidOperationException("Automatic semantic grouping requires LocalSemantic and ApprovedEvents");
 if(builder.Configuration.GetValue("LocalEvent:Enabled",false)&&(localCountry.Model!="spectrum-country:v1"||localCountry.Digest!="359d7dd4bcdab3d86b87d73ac27966f4dbb9f5efdfcc75d34a8764a09474fae7"))
     throw new InvalidOperationException("LocalEvent requires the pinned Qwen3 model for its versioned judgments");
 if(builder.Configuration.GetValue("LocalEvent:Enabled",false)&&(!localCountry.Enabled||!builder.Configuration.GetValue("LocalSemantic:Enabled",false)))
