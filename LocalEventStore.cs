@@ -56,8 +56,8 @@ public sealed class LocalEventStore(string connection)
    ON CONFLICT(publication_id_a,publication_id_b) DO UPDATE SET score=excluded.score,evidence=excluded.evidence,decision=excluded.decision,reviewed_at=excluded.reviewed_at,updated_at=now()
     WHERE r.evidence->>'method'='LocalEventJudgeV1' AND coalesce(r.evidence->>'human_decision','false')<>'true' AND r.decision<>'Rejected';
    """,("a",pair.A),("b",pair.B),("r",Revision),("ha",pair.HashA),("hb",pair.HashB),("judge",LocalEventJudge.Revision),("decision",judgment.Decision),("confidence",judgment.Confidence),("reason",judgment.Reason),("score",score),
-   ("review",judgment.Decision=="same_event"&&judgment.Confidence>=0.90?"Approved":"Pending"),
-   ("evidence",JsonSerializer.Serialize(new{method="LocalEventJudgeV1",embedding_model=Revision,judge_model=LocalEventJudge.Revision,hash_a=pair.HashA,hash_b=pair.HashB,relation=judgment.Decision,confidence=judgment.Confidence,reason=judgment.Reason})));
+   ("review",judgment.Decision=="same_event"&&judgment.Confidence>=0.90&&!judgment.Contradiction?"Approved":"Pending"),
+   ("evidence",JsonSerializer.Serialize(new{method="LocalEventJudgeV1",embedding_model=Revision,judge_model=LocalEventJudge.Revision,hash_a=pair.HashA,hash_b=pair.HashB,relation=judgment.Decision,confidence=judgment.Confidence,reason=judgment.Reason,contradiction=judgment.Contradiction})));
   await save.ExecuteNonQueryAsync(ct);await tx.CommitAsync(ct);return true;
  }
  public async Task Release(EventPair pair,string? error,CancellationToken ct)
