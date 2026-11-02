@@ -1,0 +1,27 @@
+name: Country AI validation
+on:
+  pull_request:
+    branches: [main]
+jobs:
+  country-ai:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: country_ai_checks
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: fixture-only-password
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres -d country_ai_checks"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Queue, leases, provenance and manual correction invariants
+        env:
+          COUNTRY_AI_CHECK_CONNECTION: Host=127.0.0.1;Database=country_ai_checks;Username=postgres;Password=fixture-only-password;GSS Encryption Mode=Disable
+        run: dotnet run --project checks/CountryAiChecks.csproj -c Release
