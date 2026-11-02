@@ -43,6 +43,12 @@ public sealed class LocalCountryService(LocalCountrySettings settings,LocalCount
         await using(var gate=new NpgsqlCommand("SELECT pg_try_advisory_lock(23011,10)",singleton))
             if(await gate.ExecuteScalarAsync(ct) is not true)throw new InvalidOperationException("Another local country classifier is active");
         var client=factory.CreateClient("local-country");var turn=0;var catalog=await store.Countries(ct);var refreshed=DateTimeOffset.UtcNow;
+        LocalDiscussionService? discussion=null;
+        if(config.GetValue("LocalDiscussion:Enabled",false))
+        {
+            discussion=new(new LocalDiscussionStore(config.GetConnectionString("DefaultConnection")!,settings.Model,settings.Digest),settings.Model,logger);
+            await discussion.Initialize(ct);
+        }
         while(!ct.IsCancellationRequested)
         {
             AiArticle? article=null;
@@ -50,6 +56,7 @@ public sealed class LocalCountryService(LocalCountrySettings settings,LocalCount
             {
                 await using(var alive=new NpgsqlCommand("SELECT 1",singleton))await alive.ExecuteScalarAsync(ct);
                 await VerifyModel(client,ct);
+                if(discussion is not null && await discussion.TryRun(client,ct))continue;
                 if(DateTimeOffset.UtcNow-refreshed>TimeSpan.FromMinutes(5)){catalog=await store.Countries(ct);refreshed=DateTimeOffset.UtcNow;}
                 article=await store.Claim(turn++%5==4,ct); // Four live slots, then one guaranteed archive slot; fallback if either is empty.
                 if(article is null){await Task.Delay(TimeSpan.FromSeconds(5),ct);continue;}
