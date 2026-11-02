@@ -8,10 +8,11 @@ public static class LocalEventJudge
  public const string Revision="qwen3-359d7dd4-same-event-v1";
  public static readonly string[] Decisions=["same_event","related_topic","different","uncertain"];
  public static object Request(string model,EventPair pair)=>new{
-  model,stream=false,think=false,keep_alive="10m",options=new{temperature=0,seed=42,num_ctx=4096,num_predict=350,num_thread=4},
-  format=new{type="object",additionalProperties=false,required=new[]{"decision","confidence","reason","contradiction"},properties=new{decision=new{type="string",@enum=Decisions},confidence=new{type="number",minimum=0,maximum=1},reason=new{type="string"},contradiction=new{type="boolean"}}},
+  model,stream=false,think=false,keep_alive="10m",options=new{temperature=0,seed=42,num_ctx=4096,num_predict=700,num_thread=4},
+  format=new{type="object",additionalProperties=false,required=new[]{"contradiction","decision","confidence","reason"},properties=new{contradiction=new{type="boolean"},decision=new{type="string",@enum=Decisions},confidence=new{type="number",minimum=0,maximum=1},reason=new{type="string",minLength=3,maxLength=220}}},
   messages=new[]{new{role="system",content="""
    Decide whether two news reports describe ONE SPECIFIC EVENT, not merely a similar topic.
+   First check for contradictions. Only then decide the relation. Keep the output brief.
    same_event: the same concrete occurrence, announcement, action, incident, match or decision with compatible named entities, place, time and facts. Translations and later updates of the SAME occurrence may qualify.
    related_topic: shared people, place or broad theme but separate occurrences, different decisions, different dates/incidents or different matches.
    different: unrelated events. uncertain: too little information, ambiguity, or conflicting key facts that cannot be resolved from the supplied text.

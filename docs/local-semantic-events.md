@@ -55,7 +55,9 @@ There is no exhaustive quadratic archive comparison. Current candidates also
 appear in the existing semantic-candidate view.
 
 Qwen returns same_event / related_topic / different / uncertain, confidence and
-brief evidence. Only same_event >=0.90 proposes automatic approval. Others can
+brief evidence, checking contradictions first. Opposite actions must not be
+reconciled by inventing phases; a same_event answer with contradiction=true is
+rejected by code. Only same_event >=0.90 proposes automatic approval. Others can
 remain pending for an optional reviewer decision; no manual approval is required
 for high-confidence same-event results. Its confidence is uncalibrated.
 
