@@ -82,15 +82,16 @@ public sealed class LocalSemanticStore(string connection)
    var a=Math.Min(article.Id,match.Id);var b=Math.Max(article.Id,match.Id);var ha=a==article.Id?article.Hash:match.Hash;var hb=b==article.Id?article.Hash:match.Hash;
    await using var pair=Cmd(db,tx,"""
     INSERT INTO news_local_semantic_pairs AS p(a,b,model_revision,hash_a,hash_b,similarity,state) VALUES(@a,@b,@r,@ha,@hb,@score,@state)
-    ON CONFLICT(a,b,model_revision) DO UPDATE SET hash_a=excluded.hash_a,hash_b=excluded.hash_b,similarity=excluded.similarity,state=CASE WHEN p.hash_a=excluded.hash_a AND p.hash_b=excluded.hash_b THEN p.state ELSE excluded.state END,
-     attempts=CASE WHEN p.hash_a=excluded.hash_a AND p.hash_b=excluded.hash_b THEN p.attempts ELSE 0 END,
-     decision=CASE WHEN p.hash_a=excluded.hash_a AND p.hash_b=excluded.hash_b THEN p.decision END,
-     confidence=CASE WHEN p.hash_a=excluded.hash_a AND p.hash_b=excluded.hash_b THEN p.confidence END,
-     reason=CASE WHEN p.hash_a=excluded.hash_a AND p.hash_b=excluded.hash_b THEN p.reason END,
-     judge_revision=CASE WHEN p.hash_a=excluded.hash_a AND p.hash_b=excluded.hash_b THEN p.judge_revision END,
-     judged_at=CASE WHEN p.hash_a=excluded.hash_a AND p.hash_b=excluded.hash_b THEN p.judged_at END,
-     lease_token=CASE WHEN p.hash_a=excluded.hash_a AND p.hash_b=excluded.hash_b THEN p.lease_token END,
-     lease_until=CASE WHEN p.hash_a=excluded.hash_a AND p.hash_b=excluded.hash_b THEN p.lease_until END,next_at=now();
+    ON CONFLICT(a,b,model_revision) DO UPDATE SET hash_a=excluded.hash_a,hash_b=excluded.hash_b,similarity=excluded.similarity,
+     state=CASE WHEN p.hash_a=excluded.hash_a AND p.hash_b=excluded.hash_b AND p.state<>'Invalidated' THEN CASE WHEN p.state='RelatedOnly' AND excluded.state='Pending' THEN 'Pending' ELSE p.state END ELSE excluded.state END,
+     attempts=CASE WHEN p.hash_a=excluded.hash_a AND p.hash_b=excluded.hash_b AND p.state<>'Invalidated' THEN p.attempts ELSE 0 END,
+     decision=CASE WHEN p.hash_a=excluded.hash_a AND p.hash_b=excluded.hash_b AND p.state<>'Invalidated' THEN p.decision END,
+     confidence=CASE WHEN p.hash_a=excluded.hash_a AND p.hash_b=excluded.hash_b AND p.state<>'Invalidated' THEN p.confidence END,
+     reason=CASE WHEN p.hash_a=excluded.hash_a AND p.hash_b=excluded.hash_b AND p.state<>'Invalidated' THEN p.reason END,
+     judge_revision=CASE WHEN p.hash_a=excluded.hash_a AND p.hash_b=excluded.hash_b AND p.state<>'Invalidated' THEN p.judge_revision END,
+     judged_at=CASE WHEN p.hash_a=excluded.hash_a AND p.hash_b=excluded.hash_b AND p.state<>'Invalidated' THEN p.judged_at END,
+     lease_token=CASE WHEN p.hash_a=excluded.hash_a AND p.hash_b=excluded.hash_b AND p.state<>'Invalidated' THEN p.lease_token END,
+     lease_until=CASE WHEN p.hash_a=excluded.hash_a AND p.hash_b=excluded.hash_b AND p.state<>'Invalidated' THEN p.lease_until END,next_at=now();
     INSERT INTO news_semantic_candidates(publication_id_a,publication_id_b,model_id,cosine_similarity) VALUES(@a,@b,@r,@score) ON CONFLICT(publication_id_a,publication_id_b,model_id) DO UPDATE SET cosine_similarity=excluded.cosine_similarity;
     """,("a",a),("b",b),("r",Revision),("ha",ha),("hb",hb),("score",match.Score),("state",index++<3&&match.Score>=0.80?"Pending":"RelatedOnly"));await pair.ExecuteNonQueryAsync(ct);
   }

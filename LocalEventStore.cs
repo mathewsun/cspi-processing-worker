@@ -40,13 +40,14 @@ public sealed class LocalEventStore(string connection)
  }
  public async Task<bool> Complete(EventPair pair,EventJudgment judgment,CancellationToken ct)
  {
+  var judgeRevision=judgment.Prechecked?"instruction-guard-v1":LocalEventJudge.Revision;
   await using var db=await Open(ct);await using var tx=await db.BeginTransactionAsync(ct);
   await using(var graph=Cmd(db,tx,"SELECT pg_advisory_xact_lock(23011,7)"))await graph.ExecuteNonQueryAsync(ct);
   if(!await Current(db,tx,pair.A,pair.B,pair.HashA,pair.HashB,ct))return false;
   await using var update=Cmd(db,tx,"""
    UPDATE news_local_semantic_pairs SET state='Completed',decision=@decision,confidence=@confidence,reason=@reason,judge_revision=@judge,judged_at=now(),lease_token=NULL,lease_until=NULL,attempts=0
    WHERE a=@a AND b=@b AND model_revision=@r AND hash_a=@ha AND hash_b=@hb AND lease_token=@token AND lease_until>clock_timestamp() RETURNING similarity;
-   """,("a",pair.A),("b",pair.B),("r",Revision),("ha",pair.HashA),("hb",pair.HashB),("token",pair.Token),("decision",judgment.Decision),("confidence",judgment.Confidence),("reason",judgment.Reason),("judge",LocalEventJudge.Revision));
+   """,("a",pair.A),("b",pair.B),("r",Revision),("ha",pair.HashA),("hb",pair.HashB),("token",pair.Token),("decision",judgment.Decision),("confidence",judgment.Confidence),("reason",judgment.Reason),("judge",judgeRevision));
   var score=await update.ExecuteScalarAsync(ct);if(score is null)return false;
   await using var save=Cmd(db,tx,"""
    INSERT INTO news_local_semantic_judge_audit(a,b,model_revision,hash_a,hash_b,judge_revision,decision,confidence,reason) VALUES(@a,@b,@r,@ha,@hb,@judge,@decision,@confidence,@reason);
@@ -54,10 +55,11 @@ public sealed class LocalEventStore(string connection)
    SELECT @a,@b,@score,@evidence::jsonb,@review,CASE WHEN @review='Approved' THEN now() ELSE NULL END
    WHERE NOT EXISTS(SELECT 1 FROM news_event_pair_blocks WHERE publication_id_a=@a AND publication_id_b=@b)
    ON CONFLICT(publication_id_a,publication_id_b) DO UPDATE SET score=excluded.score,evidence=excluded.evidence,decision=excluded.decision,reviewed_at=excluded.reviewed_at,updated_at=now()
-    WHERE r.evidence->>'method'='LocalEventJudgeV1' AND coalesce(r.evidence->>'human_decision','false')<>'true' AND r.decision<>'Rejected';
-   """,("a",pair.A),("b",pair.B),("r",Revision),("ha",pair.HashA),("hb",pair.HashB),("judge",LocalEventJudge.Revision),("decision",judgment.Decision),("confidence",judgment.Confidence),("reason",judgment.Reason),("score",score),
-   ("review",judgment.Decision=="same_event"&&judgment.Confidence>=0.90&&!judgment.Contradiction?"Approved":"Pending"),
-   ("evidence",JsonSerializer.Serialize(new{method="LocalEventJudgeV1",embedding_model=Revision,judge_model=LocalEventJudge.Revision,hash_a=pair.HashA,hash_b=pair.HashB,relation=judgment.Decision,confidence=judgment.Confidence,reason=judgment.Reason,contradiction=judgment.Contradiction})));
+    WHERE coalesce(r.evidence->>'human_decision','false')<>'true'
+      AND (r.decision='Pending' OR (r.evidence->>'method'='LocalEventJudgeV1' AND r.decision='Approved'));
+   """,("a",pair.A),("b",pair.B),("r",Revision),("ha",pair.HashA),("hb",pair.HashB),("judge",judgeRevision),("decision",judgment.Decision),("confidence",judgment.Confidence),("reason",judgment.Reason),("score",score),
+   ("review",judgment.Decision=="same_event"&&judgment.Confidence>=0.90&&!judgment.Contradiction&&!judgment.Prechecked?"Approved":"Pending"),
+   ("evidence",JsonSerializer.Serialize(new{method="LocalEventJudgeV1",embedding_model=Revision,judge_model=judgeRevision,hash_a=pair.HashA,hash_b=pair.HashB,relation=judgment.Decision,confidence=judgment.Confidence,reason=judgment.Reason,contradiction=judgment.Contradiction,prechecked=judgment.Prechecked})));
   await save.ExecuteNonQueryAsync(ct);await tx.CommitAsync(ct);return true;
  }
  public async Task Release(EventPair pair,string? error,CancellationToken ct)

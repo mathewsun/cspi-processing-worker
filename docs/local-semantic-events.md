@@ -57,7 +57,12 @@ appear in the existing semantic-candidate view.
 Qwen returns same_event / related_topic / different / uncertain, confidence and
 brief evidence, checking contradictions first. Opposite actions must not be
 reconciled by inventing phases; a same_event answer with contradiction=true is
-rejected by code. Only same_event >=0.90 proposes automatic approval. Others can
+rejected by code. A conservative explicit-instruction precheck abstains before
+model inference; those outcomes carry
+`instruction-guard-v1` rather than pretending to be model inference. This detects
+known markers, not all possible prompt injections. A final trusted task message
+also separates quoted article data from the requested comparison. Only
+same_event >=0.90 proposes automatic approval. Other judgments can
 remain pending for an optional reviewer decision; no manual approval is required
 for high-confidence same-event results. Its confidence is uncalibrated.
 
